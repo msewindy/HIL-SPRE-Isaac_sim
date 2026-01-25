@@ -1,0 +1,82 @@
+# 环境与本地配置
+.env
+.env/
+.venv/
+venv/
+env/
+*.local
+
+# Python 编译与缓存
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.so
+*.egg
+*.egg-info/
+.eggs/
+dist/
+build/
+*.manifest
+*.spec
+
+# 安装与包
+pip-log.txt
+pip-delete-this-directory.txt
+.installed.cfg
+*.egg
+
+# 测试与覆盖
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+coverage.xml
+*.cover
+.hypothesis/
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb_checkpoints
+
+# 编辑器与 IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.project
+.pydevproject
+.settings/
+
+# 系统文件
+.DS_Store
+.DS_Store?
+._*
+Thumbs.db
+ehthumbs.db
+
+# 实验与训练
+wandb/
+runs/
+logs/
+checkpoints/
+*.ckpt
+outputs/
+tb_logs/
+
+# ROS / 构建
+devel/
+log/
+install/
+*.bag
+
+# 其他
+*.log
+*.tmp
+.cache/

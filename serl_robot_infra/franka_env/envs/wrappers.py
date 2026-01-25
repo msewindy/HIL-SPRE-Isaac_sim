@@ -5,10 +5,11 @@ import numpy as np
 from gymnasium.spaces import Box
 import copy
 from franka_env.spacemouse.spacemouse_expert import SpaceMouseExpert
+from franka_env.gamepad.gamepad_expert import GamepadExpert
 import requests
 from scipy.spatial.transform import Rotation as R
 from franka_env.envs.franka_env import FrankaEnv
-from typing import List
+from typing import List, Tuple
 
 sigmoid = lambda x: 1 / (1 + np.exp(-x))
 
@@ -261,6 +262,123 @@ class SpacemouseIntervention(gym.ActionWrapper):
         info["left"] = self.left
         info["right"] = self.right
         return obs, rew, done, truncated, info
+
+
+class GamepadIntervention(gym.ActionWrapper):
+    """
+    Gamepad intervention wrapper with the same interface as SpacemouseIntervention.
+    
+    Uses GamepadExpert to read gamepad input and override policy actions.
+    Left hand controls position (x, y, z), right hand controls rotation (roll, pitch, yaw).
+    """
+    
+    def __init__(self, env, action_indices=None, deadzone=0.0, sensitivity=1.0, joystick_id=0):
+        """
+        Initialize gamepad intervention wrapper.
+        
+        Args:
+            env: The environment to wrap
+            action_indices: Optional indices to filter which actions can be overridden
+            deadzone: Deadzone threshold (default 0.0 to match SpaceMouse output range)
+            sensitivity: Sensitivity scaling (default 1.0 to match SpaceMouse output range)
+            joystick_id: Joystick device ID if multiple gamepads are connected
+        """
+        super().__init__(env)
+        
+        self.gripper_enabled = True
+        if self.action_space.shape == (6,):
+            self.gripper_enabled = False
+        
+        self.expert = GamepadExpert(deadzone=deadzone, sensitivity=sensitivity, joystick_id=joystick_id)
+        self.left, self.right = False, False
+        self.x_button, self.y_button = False, False
+        self._y_button_pressed = False  # 用于边缘触发检测
+        self.action_indices = action_indices
+    
+    def action(self, action: np.ndarray) -> Tuple[np.ndarray, bool]:
+        """
+        Input:
+        - action: policy action
+        Output:
+        - action: gamepad action if nonzero; else, policy action
+        - replaced: whether action was replaced by gamepad input
+        """
+        expert_a, buttons = self.expert.get_action()
+        self.left, self.right = buttons[0], buttons[1]  # A button (close), B button (open)
+        self.x_button = buttons[2] if len(buttons) > 2 else 0  # X button
+        self.y_button = buttons[3] if len(buttons) > 3 else 0  # Y button - 场景重置
+        intervened = False
+        
+        # 处理场景重置（Y 键）
+        if self.y_button and not self._y_button_pressed:
+            # 检测 Y 键按下（边缘触发，避免重复触发）
+            self._y_button_pressed = True
+            try:
+                # 调用环境的场景重置方法（如果存在）
+                if hasattr(self.env, 'reset_scene'):
+                    self.env.reset_scene()
+                elif hasattr(self.env, 'url'):
+                    # 如果环境有 url 属性，直接调用 HTTP 接口
+                    import requests
+                    try:
+                        requests.post(self.env.url + "reset_scene", timeout=1.0)
+                        print("[INFO] Scene reset triggered by gamepad Y button")
+                    except:
+                        pass
+            except Exception as e:
+                print(f"[WARNING] Failed to reset scene: {e}")
+        elif not self.y_button:
+            # Y 键释放，重置标志
+            self._y_button_pressed = False
+        
+        # Check if there's any gamepad input
+        if np.linalg.norm(expert_a) > 0.001:
+            intervened = True
+        
+        # Handle gripper control
+        if self.gripper_enabled:
+            if self.left:  # A button: close gripper
+                gripper_action = np.random.uniform(-1, -0.9, size=(1,))
+                intervened = True
+            elif self.right:  # B button: open gripper
+                gripper_action = np.random.uniform(0.9, 1, size=(1,))
+                intervened = True
+            else:
+                gripper_action = np.zeros((1,))
+            expert_a = np.concatenate((expert_a, gripper_action), axis=0)
+        
+        # Filter action indices if specified
+        if self.action_indices is not None:
+            filtered_expert_a = np.zeros_like(expert_a)
+            filtered_expert_a[self.action_indices] = expert_a[self.action_indices]
+            expert_a = filtered_expert_a
+        
+        if intervened:
+            return expert_a, True
+        
+        return action, False
+    
+    def step(self, action):
+        new_action, replaced = self.action(action)
+        
+        obs, rew, done, truncated, info = self.env.step(new_action)
+        if replaced:
+            info["intervene_action"] = new_action
+        info["left"] = self.left
+        info["right"] = self.right
+        info["x_button"] = getattr(self, 'x_button', 0)
+        info["y_button"] = getattr(self, 'y_button', 0)
+        return obs, rew, done, truncated, info
+    
+    def reset(self, **kwargs):
+        return self.env.reset(**kwargs)
+    
+    def close(self):
+        """Close gamepad connection."""
+        if hasattr(self, 'expert'):
+            self.expert.close()
+        return self.env.close()
+
 
 class DualSpacemouseIntervention(gym.ActionWrapper):
     def __init__(self, env, action_indices=None, gripper_enabled=True):

@@ -18,5 +18,6 @@ setup(
         "requests",
         "flask",
         "defusedxml",
+        "pygame>=2.0.0",
     ],
 )

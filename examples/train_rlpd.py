@@ -46,6 +46,7 @@ flags.DEFINE_string("checkpoint_path", None, "Path to save checkpoints.")
 flags.DEFINE_integer("eval_checkpoint_step", 0, "Step to evaluate the checkpoint.")
 flags.DEFINE_integer("eval_n_trajs", 0, "Number of trajectories to evaluate.")
 flags.DEFINE_boolean("save_video", False, "Save video.")
+flags.DEFINE_boolean("use_sim", False, "Use Isaac Sim simulation environment for actor (if --actor is set).")
 
 flags.DEFINE_boolean(
     "debug", False, "Debug mode."
@@ -368,8 +369,13 @@ def main(_):
     rng, sampling_rng = jax.random.split(rng)
 
     assert FLAGS.exp_name in CONFIG_MAPPING, "Experiment folder not found."
+    # 环境选择逻辑：
+    # - 如果设置了 --use_sim 且是 Actor 节点，使用仿真环境
+    # - 如果是 Learner 节点，使用仿真环境（用于获取 observation_space 等信息）
+    # - 否则使用真实环境
+    use_fake_env = FLAGS.use_sim if FLAGS.actor else FLAGS.learner
     env = config.get_environment(
-        fake_env=FLAGS.learner,
+        fake_env=use_fake_env,
         save_video=FLAGS.save_video,
         classifier=True,
     )

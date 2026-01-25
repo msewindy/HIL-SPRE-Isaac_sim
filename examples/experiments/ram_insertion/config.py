@@ -2,6 +2,7 @@ import os
 import jax
 import jax.numpy as jnp
 import numpy as np
+from typing import Dict
 
 from franka_env.envs.wrappers import (
     Quat2EulerWrapper,
@@ -100,18 +101,59 @@ class TrainConfig(DefaultTrainingConfig):
     setup_mode = "single-arm-fixed-gripper"
 
     def get_environment(self, fake_env=False, save_video=False, classifier=False):
+        """
+        获取环境实例
+        
+        Args:
+            fake_env: 此任务只支持真实环境，应始终为 False
+            save_video: 是否保存视频
+            classifier: 是否使用奖励分类器
+        
+        Returns:
+            env: Gym 环境实例
+        """
+        # ========== 环境选择逻辑 ==========
+        # 注意：ram_insertion 任务只支持真实环境，Isaac Sim 支持已迁移到 gear_assembly 任务
+        if fake_env:
+            raise ValueError(
+                "ram_insertion task does not support Isaac Sim simulation environment.\n"
+                "If you need Isaac Sim support, please use the gear_assembly task instead."
+            )
+        
+        # 使用真实环境
         env = RAMEnv(
-            fake_env=fake_env,
+            fake_env=False,
             save_video=save_video,
             config=EnvConfig(),
         )
+        
+        # ========== 环境包装器（真实和仿真环境共用）==========
+        # 1. 固定夹爪包装器（任务要求夹爪关闭）
         env = GripperCloseEnv(env)
+        
+        # 2. SpaceMouse 干预（真实环境必需，仿真环境可选）
         if not fake_env:
+            # 真实环境：必需 SpaceMouse 进行干预
             env = SpacemouseIntervention(env)
+        # 注意：仿真环境也可以使用 SpaceMouse（如果已连接）
+        # 如果需要，可以取消下面的注释：
+        # else:
+        #     # 可选：仿真环境也支持 SpaceMouse
+        #     env = SpacemouseIntervention(env)
+        
+        # 3. 相对坐标系包装器
         env = RelativeFrame(env)
+        
+        # 4. 四元数转欧拉角包装器
         env = Quat2EulerWrapper(env)
+        
+        # 5. SERL 观察包装器
         env = SERLObsWrapper(env, proprio_keys=self.proprio_keys)
+        
+        # 6. 动作分块包装器
         env = ChunkingWrapper(env, obs_horizon=1, act_exec_horizon=None)
+        
+        # 7. 奖励分类器（如果需要）
         if classifier:
             classifier = load_classifier_func(
                 key=jax.random.PRNGKey(0),
@@ -126,4 +168,5 @@ class TrainConfig(DefaultTrainingConfig):
                 return int(sigmoid(classifier(obs)) > 0.85 and obs['state'][0, 6] > 0.04)
 
             env = MultiCameraBinaryRewardClassifierWrapper(env, reward_func)
+        
         return env

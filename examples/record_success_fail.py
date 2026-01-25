@@ -12,6 +12,7 @@ from experiments.mappings import CONFIG_MAPPING
 FLAGS = flags.FLAGS
 flags.DEFINE_string("exp_name", None, "Name of experiment corresponding to folder.")
 flags.DEFINE_integer("successes_needed", 200, "Number of successful transistions to collect.")
+flags.DEFINE_boolean("fake_env", False, "Use Isaac Sim simulation environment.")
 
 
 success_key = False
@@ -30,7 +31,7 @@ def main(_):
     listener.start()
     assert FLAGS.exp_name in CONFIG_MAPPING, 'Experiment folder not found.'
     config = CONFIG_MAPPING[FLAGS.exp_name]()
-    env = config.get_environment(fake_env=False, save_video=False, classifier=False)
+    env = config.get_environment(fake_env=FLAGS.fake_env, save_video=False, classifier=False)
 
     obs, _ = env.reset()
     successes = []
