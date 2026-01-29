@@ -129,12 +129,27 @@ class IsaacSimFrankaEnv(gym.Env):
         self.image_cache_lock = threading.Lock()
         self.ws_connected = False
         
+        # 连接状态标志（用于抑制重复日志）
+        self._connection_lost = False
+        
         # 建立 WebSocket 连接（用于图像接收）
         self._connect_websocket()
         
-        # 初始化状态
-        self._update_currpos()
+        # [ROBUSTNESS] 强制等待服务器就绪并同步初始状态，防止起点跳变
+        self._log("[INFO] Synchronizing with Server...")
+        connected = False
+        for i in range(20): # 最多等 10 秒
+             self._update_currpos()
+             if self.currpos is not None and not np.allclose(self.currpos[:3], [0.5, 0.0, 0.5]):
+                  connected = True
+                  break
+             time.sleep(0.5)
         
+        if not connected:
+             self._log("[WARNING] Server not ready or state not synced. Robot might jump.")
+        else:
+             self._log(f"[INFO] Initial state synced at: {np.round(self.currpos[:3], 3)}")
+
         # 键盘监听（用于终止）
         if not fake_env:
             from pynput import keyboard
@@ -147,8 +162,17 @@ class IsaacSimFrankaEnv(gym.Env):
         else:
             self.listener = None
         
-        print(f"[INFO] Initialized Isaac Sim Franka Environment (connected to {self.url})")
+        print(f"[INFO] Initialized Isaac Sim Franka Environment (connected to {self.url}) - SOURCE CODE VERIFIED")
     
+    def _log(self, msg):
+        from datetime import datetime
+        # 增加毫秒级时间戳，方便与服务器对齐日志
+        if hasattr(self, "name"):
+             prefix = f"[{self.name}]"
+        else:
+             prefix = "[IsaacSimClient]"
+        print(f"[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] {prefix} {msg}")
+
     def _get_observation_space(self):
         """定义观察空间"""
         return gym.spaces.Dict({
@@ -248,10 +272,20 @@ class IsaacSimFrankaEnv(gym.Env):
         """发送位姿命令（HTTP POST）"""
         try:
             arr = np.array(pos).astype(np.float32)
+            # [DIAGNOSTIC] Log sent data (转换为 WXYZ 显示)
+            quat_wxyz = np.array([arr[6], arr[3], arr[4], arr[5]])
+            # self._log(f"[NET] Sending Pose: {np.round(arr[:3], 3)} Quat(WXYZ): {np.round(quat_wxyz, 3)}")
             data = {"arr": arr.tolist()}
             self.session.post(self.url + "pose", json=data, timeout=0.5)
+            
+            if self._connection_lost:
+                print("[INFO] Connection to Isaac Sim server restored.")
+                self._connection_lost = False
+                
         except Exception as e:
-            print(f"[WARNING] Failed to send pose command: {e}")
+            if not self._connection_lost:
+                print(f"[WARNING] Failed to send pose command: {e}")
+                self._connection_lost = True
     
     def _send_gripper_command(self, pos: float, mode="binary"):
         """发送夹爪命令（HTTP POST）"""
@@ -269,8 +303,15 @@ class IsaacSimFrankaEnv(gym.Env):
                     json={"gripper_pos": float(gripper_pos)},
                     timeout=0.5
                 )
+            
+            if self._connection_lost:
+                print("[INFO] Connection to Isaac Sim server restored.")
+                self._connection_lost = False
+
         except Exception as e:
-            print(f"[WARNING] Failed to send gripper command: {e}")
+            if not self._connection_lost:
+                print(f"[WARNING] Failed to send gripper command: {e}")
+                self._connection_lost = True
     
     def _update_currpos(self):
         """更新状态（HTTP POST）"""
@@ -278,15 +319,39 @@ class IsaacSimFrankaEnv(gym.Env):
             response = self.session.post(self.url + "getstate", timeout=1.0)
             if response.status_code == 200:
                 ps = response.json()
+                
+                # [DEBUG_DATA_COLLECTION] Check for None values
+                if self.hz < 20: # Only print for low freq to avoid spam, or use counter
+                     for k, v in ps.items():
+                         if v is None:
+                             print(f"[ERROR] Received None for key '{k}' in getstate response!")
+                
+                # [GROUND TRUTH REWARD] Parse object states
+                self.object_states = ps.get("object_states", {})
                 self.currpos = np.array(ps["pose"])
+                
                 self.currvel = np.array(ps["vel"])
                 self.currforce = np.array(ps["force"])
                 self.currtorque = np.array(ps["torque"])
                 self.curr_gripper_pos = np.array([ps["gripper_pos"]])
+                
+                # [GROUND TRUTH REWARD] Parse object states
+                self.object_states = ps.get("object_states", {})
+                
+                # [DIAGNOSTIC] Log received state occasionally
+                # self._log(f"[STATE] Received pose: {np.round(self.currpos[:3], 3)}")
+                
+                if self._connection_lost:
+                    print("[INFO] Connection to Isaac Sim server restored.")
+                    self._connection_lost = False
             else:
-                print(f"[WARNING] Failed to get state: HTTP {response.status_code}")
+                if not self._connection_lost:
+                    print(f"[WARNING] Failed to get state: HTTP {response.status_code}")
+                    self._connection_lost = True
         except Exception as e:
-            print(f"[WARNING] Failed to update current position: {e}")
+            if not self._connection_lost:
+                print(f"[WARNING] Failed to update current position: {e}")
+                self._connection_lost = True
             # 使用默认值
             if self.currpos is None:
                 self.currpos = np.array([0.5, 0.0, 0.5, 0.0, 0.0, 0.0, 1.0])
@@ -310,6 +375,13 @@ class IsaacSimFrankaEnv(gym.Env):
                     # 如果没有图像，返回黑色占位符
                     images[cam_key] = np.zeros((128, 128, 3), dtype=np.uint8)
         
+        # [VISUALIZATION] Display images if configured
+        if self.display_image:
+            for cam_key, img_rgb in images.items():
+                img_bgr = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2BGR)
+                cv2.imshow(f"IsaacSim_{cam_key}", img_bgr)
+            cv2.waitKey(1)
+            
         # 保存视频帧（如果需要）
         if self.save_video:
             if not hasattr(self, 'recording_frames'):
@@ -352,21 +424,83 @@ class IsaacSimFrankaEnv(gym.Env):
         except:
             pass
         
+        # [ROBUSTNESS] 确保在重置前已获取有效的当前位姿，防止因连接延迟导致的“大跨度跳跃”
+        max_retries = 30
+        while self.currpos is None and max_retries > 0:
+            self._log("[INFO] Waiting for valid state from server before reset...")
+            self._update_currpos()
+            time.sleep(0.2)
+            max_retries -= 1
+            
+        if self.currpos is None:
+            self._log("[ERROR] Could not connect to server after retries. Reset might fail.")
+            # 使用一个安全的默认值
+            self.currpos = np.array([0.5, 0.0, 0.5, 0.5, 0.5, 0.5, 0.5])
+        
         # 获取重置位姿
         reset_pose = self._get_reset_pose()
         
         # 移动到重置位姿
         self.interpolate_move(reset_pose, timeout=1.0)
         
+        # [ROBUSTNESS] 强制等待物理收敛
+        # 防止 interpolate_move 命令发完但物理未到达（例如 drift）导致后续 step 读取错误
+        for _ in range(20): # 最多追加等待 2秒
+            self._update_currpos()
+            dist = np.linalg.norm(self.currpos[:3] - reset_pose[:3])
+            # 旋转偏差 (1 - |q1 . q2|)
+            q_curr = self.currpos[3:]
+            q_target = reset_pose[3:]
+            rot_err = 1.0 - np.abs(np.dot(q_curr, q_target))
+            
+            if dist < 0.02 and rot_err < 0.05:
+                # self._log(f"[VERIFY] Reset Converged. Dist: {dist:.3f}, RotErr: {rot_err:.3f}")
+                print(f"[VERIFY] Reset Converged. Dist: {dist:.3f}, RotErr: {rot_err:.3f}")
+                break
+            else:
+                 pass
+                 # print(f"[DEBUG] Reset Check: Dist={dist:.3f} (Threshold 0.02), RotDiff={rot_err:.3f}. Target={np.round(reset_pose[2], 3)}, Curr={np.round(self.currpos[2], 3)}")
+                
+            # 如果未收敛，补发指令并等待
+            # print(f"[WARN] Reset not converged (Dist: {dist:.3f}, Rot: {rot_err:.3f}). Resending...")
+            
+            # [FALLBACK] 如果多次尝试后仍未收敛（例如还是很大），说明物理卡死或漂移过远
+            # 在最后几次尝试时，尝试强制关节复位 (Teleport)
+            if _ > 15 and dist > 0.1:
+                 print(f"[WARN] Reset stubborn (Dist: {dist:.3f}). Triggering Force Teleport...")
+                 try:
+                     self.session.post(self.url + "jointreset", json={}, timeout=1.0)
+                     time.sleep(0.5) # 等待传送生效
+                 except Exception as e:
+                     print(f"[ERROR] Force Teleport failed: {e}")
+            
+            self._send_pos_command(reset_pose)
+            time.sleep(0.1)
+            
         # 更新状态
         self._update_currpos()
+        
+        # [ROBUSTNESS] 再次强制同步，确保 RelativeFrame 拿到的是物理稳定后的 0.55
+        # 很多时候 interpolate_move 刚结束，物理引擎还没来得及更新 Pose，导致立刻读取拿到的是旧值 (0.65)
+        for _ in range(5):
+            time.sleep(0.1)
+            self._update_currpos()
+            print(f"[DEBUG] Final Reset Obs Check: {np.round(self.currpos[:3], 3)}")
+            
         self.curr_path_length = 0
         self.terminate = False
         
+        # [DRIFT FIX] Initialize last_commanded_pose to the commanded reset pose (final target)
+        # This prevents drift accumulation by tracking commanding pose instead of measured pose.
+        self.last_commanded_pose = reset_pose.copy()
+
         # 获取观察
         obs = self._get_obs()
         
-        return obs, {"succeed": False}
+        return obs, {
+            "succeed": False,
+            "target_reset_pose": self.last_commanded_pose.copy() # [ANCHOR FIX] 传递理想重置位姿给 RelativeFrame
+        }
     
     def step(self, action: np.ndarray) -> Tuple[Dict, float, bool, bool, Dict]:
         """
@@ -393,14 +527,25 @@ class IsaacSimFrankaEnv(gym.Env):
         # 3. 计算旋转增量（rotvec）
         rot_delta = action[3:6] * self.action_scale[1]
         
-        # 4. 更新位置
-        target_pos = self.currpos[:3] + xyz_delta
+        # 4. 更新位置 (使用 last_commanded_pose 以防止漂移)
+        # Old: target_pos = self.currpos[:3] + xyz_delta
+        if not hasattr(self, 'last_commanded_pose') or self.last_commanded_pose is None:
+             # Fallback if reset wasn't called properly (shouldn't happen)
+             print(f"[DEBUG-FAILURE] last_commanded_pose missing in step! Fallback to currpos: {np.round(self.currpos, 3)}")
+             self.last_commanded_pose = self.currpos.copy()
+             
+        target_pos = self.last_commanded_pose[:3] + xyz_delta
         
-        # 5. 更新姿态（使用 rotvec）
-        current_rot = Rotation.from_quat(self.currpos[3:])
+        # 5. 更新姿态 (使用 rotvec 叠加在 last_commanded_pose 上)
+        # Old: current_rot = Rotation.from_quat(self.currpos[3:])
+        current_rot = Rotation.from_quat(self.last_commanded_pose[3:])
         delta_rot = Rotation.from_rotvec(rot_delta)
         target_rot = delta_rot * current_rot
         target_quat = target_rot.as_quat()
+
+        if np.linalg.norm(action) < 1e-5:
+           # self._log(f"[DEBUG] [Step] Zero Action Detected. TargetQuat: {np.round(target_quat, 3)}")
+           pass
         
         # 6. 组合目标位姿
         target_pose = np.concatenate([target_pos, target_quat])
@@ -409,10 +554,15 @@ class IsaacSimFrankaEnv(gym.Env):
         target_pose = self.clip_safety_box(target_pose)
         
         # 8. 发送位姿命令
+        # print(f"[DEBUG] Sending Pose Command: {target_pose}")
         self._send_pos_command(target_pose)
+        
+        # [DRIFT FIX] 更新 last_commanded_pose
+        self.last_commanded_pose = target_pose.copy()
         
         # 9. 处理夹爪动作
         gripper_action = action[6] * self.action_scale[2]
+        # print(f"[DEBUG] Sending Gripper Command: {gripper_action}")
         self._send_gripper_command(gripper_action, mode="continuous")
         
         # 10. 控制频率
@@ -469,41 +619,43 @@ class IsaacSimFrankaEnv(gym.Env):
     def clip_safety_box(self, pose: np.ndarray) -> np.ndarray:
         """
         裁剪到安全边界框内
-        
-        Args:
-            pose: np.ndarray[7] - [x, y, z, qx, qy, qz, qw]
-        
-        Returns:
-            clipped_pose: np.ndarray[7]
         """
         # 裁剪位置
+        # print(f"[DEBUG] Pre-Clip Pose: {np.round(pose[:3], 3)}")
         pose[:3] = np.clip(
             pose[:3],
             self.xyz_bounding_box.low,
             self.xyz_bounding_box.high
         )
+        if np.any(pose[:3] == self.xyz_bounding_box.high) or np.any(pose[:3] == self.xyz_bounding_box.low):
+             pass
+             # print(f"[DEBUG] Safety Box Clipped Pose to: {np.round(pose[:3], 3)}")
         
-        # 裁剪姿态
-        euler = Rotation.from_quat(pose[3:]).as_euler("xyz")
+        # 裁剪姿态 (处理欧拉角的不连续性)
+        # [FIX] Disabled rotation clipping due to Euler singularity at Ry=pi (Gimbal Lock)
+        # The conversion to Euler and back is unstable for 180 deg rotations and causes clamping errors.
+        """
+        from scipy.spatial.transform import Rotation as R
+        euler = R.from_quat(pose[3:]).as_euler("xyz")
         
-        # 单独处理第一个欧拉角（由于 pi 到 -pi 的不连续性）
-        sign = np.sign(euler[0])
-        euler[0] = sign * np.clip(
-            np.abs(euler[0]),
-            self.rpy_bounding_box.low[0],
-            self.rpy_bounding_box.high[0],
-        )
+        low = self.rpy_bounding_box.low
+        high = self.rpy_bounding_box.high
         
-        # 裁剪其他欧拉角
-        euler[1:] = np.clip(
-            euler[1:],
-            self.rpy_bounding_box.low[1:],
-            self.rpy_bounding_box.high[1:]
-        )
-        
-        # 转换回四元数
-        pose[3:] = Rotation.from_euler("xyz", euler).as_quat()
-        
+        for i in range(3):
+            # [ROBUSTNESS] 如果限制范围包含 pi/-pi (例如 > 3.1), 
+            # 那么在这个维度的裁剪会导致严重的抖动 (因为 pi 和 -pi 是同一个姿态)。
+            # 我们仅对明显小于 pi 的限制进行强制裁剪。
+            if high[i] > 3.1:
+                continue
+                
+            val = euler[i]
+            if val < low[i]:
+                euler[i] = low[i]
+            elif val > high[i]:
+                euler[i] = high[i]
+                
+        pose[3:] = R.from_euler("xyz", euler).as_quat()
+        """
         return pose
     
     def _get_reset_pose(self) -> np.ndarray:
@@ -534,15 +686,51 @@ class IsaacSimFrankaEnv(gym.Env):
         return reset_pose
     
     def interpolate_move(self, goal: np.ndarray, timeout: float):
-        """移动到目标位置（线性插值）"""
+        """移动到目标位置（位置线性插值，姿态球面线性插值 SLERP）"""
         if goal.shape == (6,):
             goal = np.concatenate([goal[:3], euler_2_quat(goal[3:])])
+            
         steps = int(timeout * self.hz)
+        if steps <= 1:
+            self._send_pos_command(goal)
+            return
+            
         self._update_currpos()
-        path = np.linspace(self.currpos, goal, steps)
-        for p in path:
+        start_pose = self.currpos.copy()
+        # [DIAGNOSTIC] Log interpolation range
+        self._log(f"[DEBUG] Interp Start: {np.round(start_pose[:3], 3)} End: {np.round(goal[:3], 3)}")
+        
+        # 位置线性插值
+        pos_path = np.linspace(start_pose[:3], goal[:3], steps)
+        
+        # 姿态球面线性插值 (SLERP)
+        from scipy.spatial.transform import Rotation as R
+        from scipy.spatial.transform import Slerp
+        
+        # [FIX] 确保两个四元数在同一半球（避免 Slerp 选择长路径）
+        # q 和 -q 表示同一个旋转，但 Slerp 会选择最短路径
+        # 如果点积为负，说明它们在不同半球，需要翻转其中一个
+        start_quat = start_pose[3:].copy()
+        goal_quat = goal[3:].copy()
+        
+        if np.dot(start_quat, goal_quat) < 0:
+            goal_quat = -goal_quat
+            self._log("[DEBUG] Flipped goal quaternion to ensure shortest Slerp path")
+        
+        # 确保输入是有效的四元数 [x, y, z, w]
+        # 注意：euler_2_quat 已经更新为返回 XYZW
+        key_rots = R.from_quat([start_quat, goal_quat])
+        key_times = [0, 1]
+        slerp = Slerp(key_times, key_rots)
+        
+        interp_times = np.linspace(0, 1, steps)
+        quat_path = slerp(interp_times).as_quat()
+        
+        for i in range(steps):
+            p = np.concatenate([pos_path[i], quat_path[i]])
             self._send_pos_command(p)
             time.sleep(1 / self.hz)
+            
         self._update_currpos()
     
     def go_to_reset(self, joint_reset=False):
@@ -571,6 +759,10 @@ class IsaacSimFrankaEnv(gym.Env):
         
         # 获取重置位姿（支持随机化）
         reset_pose = self._get_reset_pose()
+        # 转换为 WXYZ 显示
+        quat_wxyz = np.array([reset_pose[6], reset_pose[3], reset_pose[4], reset_pose[5]])
+        pose_display = np.concatenate([reset_pose[:3], quat_wxyz])
+        print(f"[INFO] Moving to RESET_POSE: {np.round(pose_display, 3)} [WXYZ]")
         
         # 移动到重置位姿
         self.interpolate_move(reset_pose, timeout=1.0)
@@ -635,10 +827,14 @@ class IsaacSimFrankaEnv(gym.Env):
             response = self.session.post(self.url + "reset_scene", timeout=2.0)
             if response.status_code == 200:
                 print("[INFO] Scene reset successful")
-                # 等待场景稳定
-                time.sleep(0.5)
+                # 等待场景稳定 (加大等待时间，确保 Server 队列处理完毕)
+                time.sleep(3.0)
                 # 更新状态
                 self._update_currpos()
+                # [FIX] 同步 last_commanded_pose，防止 step() 继续使用旧的指令位置导致回跳
+                if self.currpos is not None:
+                    self.last_commanded_pose = self.currpos.copy()
+                    print(f"[INFO] Client state synced to reset pose: {np.round(self.currpos, 3)}")
             else:
                 print(f"[WARNING] Scene reset returned status {response.status_code}")
         except Exception as e:

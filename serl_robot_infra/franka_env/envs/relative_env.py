@@ -61,10 +61,17 @@ class RelativeFrame(gym.Wrapper):
         # Update transform matrix
         self.transform_matrix = construct_transform_matrix(obs["state"]["tcp_pose"])
         if self.include_relative_pose:
+            # [ANCHOR FIX] Use ideal target pose if available, otherwise fallback to observed pose
+            # This forces the controller to correct physical drift between reset_pose and actual_pose
+            anchor_pose = info.get('target_reset_pose', obs["state"]["tcp_pose"])
+            
             # Update transformation matrix from the reset pose's relative frame to base frame
             self.T_r_o_inv = np.linalg.inv(
-                construct_homogeneous_matrix(obs["state"]["tcp_pose"])
+                construct_homogeneous_matrix(anchor_pose)
             )
+            print(f"[DEBUG] RelativeFrame Reset Pose: {np.round(obs['state']['tcp_pose'][:3], 3)}")
+            print(f"[DEBUG] Anchor Pose (Ref): {np.round(anchor_pose[:3], 3)}")
+            print(f"[DEBUG] T_r_o_inv Translation: {np.round(self.T_r_o_inv[:3, 3], 3)}")
 
         # Transform observation to spatial frame
         return self.transform_observation(obs), info

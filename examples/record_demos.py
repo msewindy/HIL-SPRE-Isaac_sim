@@ -17,9 +17,10 @@ flags.DEFINE_boolean("fake_env", False, "Use Isaac Sim simulation environment.")
 def main(_):
     assert FLAGS.exp_name in CONFIG_MAPPING, 'Experiment folder not found.'
     config = CONFIG_MAPPING[FLAGS.exp_name]()
-    env = config.get_environment(fake_env=FLAGS.fake_env, save_video=False, classifier=True)
+    env = config.get_environment(fake_env=FLAGS.fake_env, save_video=False, classifier=False)
     
     obs, info = env.reset()
+    # print(f"[VERIFY] Post-Reset State: {np.round(obs['state'][0], 4)}")
     print("Reset done")
     transitions = []
     success_count = 0
@@ -30,10 +31,12 @@ def main(_):
     
     while success_count < success_needed:
         actions = np.zeros(env.action_space.sample().shape) 
+        # print(f"[DEBUG] Pre-Step Action (Input to step): {np.round(actions, 4)}")
         next_obs, rew, done, truncated, info = env.step(actions)
         returns += rew
         if "intervene_action" in info:
             actions = info["intervene_action"]
+            # print(f"[DEBUG] Client Gamepad Action: {actions}")
         transition = copy.deepcopy(
             dict(
                 observations=obs,
@@ -56,9 +59,16 @@ def main(_):
                     transitions.append(copy.deepcopy(transition))
                 success_count += 1
                 pbar.update(1)
+                
+                # [USER-REQUEST] Wait 10s before reset to inspect final state
+                print(f"[INFO] Success! Waiting 10s before reset to inspect results...")
+                time.sleep(10)
+            else:
+                print(f"[{datetime.datetime.now().strftime('%H:%M:%S.%f')[:-3]}] [DemoRecorder] [FAIL] Episode failed or timed out. Discarding trajectory.")
+
             trajectory = []
             returns = 0
-            obs, info = env.reset()
+            obs, info = env.reset() 
             
     if not os.path.exists("./demo_data"):
         os.makedirs("./demo_data")

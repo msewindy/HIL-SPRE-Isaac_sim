@@ -3,20 +3,20 @@
     customLayerData = {
         dictionary cameraSettings = {
             dictionary Front = {
-                double3 position = (5, 0, 0)
-                double radius = 5
+                double3 position = (5, -0.5752452177698534, 0.39318745984988934)
+                double radius = 0.8721661567687988
             }
             dictionary Perspective = {
-                double3 position = (1.0044126845350698, -1.8491633944216617, 1.140161396304979)
-                double3 target = (-9.087053681101235, 15.3024392158364, -6.46514837980074)
+                double3 position = (1.639510990532662, 0.9674438668669005, 1.223125756141099)
+                double3 target = (-20.953983945195336, -21.046914415258136, -8.851243116071075)
             }
             dictionary Right = {
-                double3 position = (0, -5, 0)
-                double radius = 5
+                double3 position = (-0.007098772888521573, -5, 0.4376711307283346)
+                double radius = 0.20289964675903321
             }
             dictionary Top = {
-                double3 position = (0, 0, 5)
-                double radius = 5
+                double3 position = (0.027687061484490474, -0.5715400549298372, 5)
+                double radius = 0.3917116403579712
             }
             string boundCamera = "/OmniverseKit_Persp"
         }
@@ -44,6 +44,14 @@ def Xform "World"
         prepend apiSchemas = ["PhysxSceneAPI"]
     )
     {
+        vector3f physics:gravityDirection = (0, 0, -1)
+        float physics:gravityMagnitude = 9.81
+        uniform token physxScene:broadphaseType = "MBP"
+        bool physxScene:enableCCD = 1
+        bool physxScene:enableGPUDynamics = 0
+        bool physxScene:enableStabilization = 0
+        uniform token physxScene:solverType = "TGS"
+        uint physxScene:timeStepsPerSecond = 60
     }
 
     def Xform "Xform"
@@ -54,59 +62,35 @@ def Xform "World"
         uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
     }
 
-    def Xform "sorting_scale" (
-        prepend references = @../isaacsim_assets/Assets/Isaac/5.0/Isaac/IsaacLab/Mimic/nut_pour_task/nut_pour_assets/sorting_scale.usd@
-    )
-    {
-        double3 xformOp:rotateXYZ = (0, 0, 0)
-        double3 xformOp:scale = (5, 5.000000074505806, 20)
-        double3 xformOp:translate = (0, -0.800000011920929, 0)
-        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:rotateXYZ", "xformOp:scale"]
-
-        def PhysicsFixedJoint "FixedJoint"
-        {
-            rel physics:body1 = </World/sorting_scale>
-            float physics:breakForce = 3.4028235e38
-            float physics:breakTorque = 3.4028235e38
-            point3f physics:localPos0 = (0, -0.70879066, 0)
-            point3f physics:localPos1 = (0, 0.01824187, 0)
-            quatf physics:localRot0 = (1, 0, 0, 0)
-            quatf physics:localRot1 = (1, 0, 0, 0)
-        }
-    }
-
     def Xform "factory_gear_medium" (
-        prepend references = @../isaacsim_assets/Assets/Isaac/5.0/Isaac/IsaacLab/Factory/factory_gear_medium.usd@
+        prepend references = @/home/lfw/isaacsim_assets/Assets/Isaac/5.0/Isaac/IsaacLab/Factory/factory_gear_medium.usd@
     )
     {
+        token visibility = "inherited"
         quatd xformOp:orient = (1, 0, 0, 0)
         double3 xformOp:scale = (1, 1, 1)
-        double3 xformOp:translate = (0.010764298072734768, -0.7561332317115274, 0.39949157815738634)
+        double3 xformOp:translate = (0, -0.5066064038574489, 0.4005532378918489)
         uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
 
         over "factory_gear_medium"
         {
-        }
-    }
+            quatd xformOp:orient = (1, 0, 0, 0)
+            double3 xformOp:scale = (1, 1, 1)
+            double3 xformOp:translate = (0, 0, 0)
+            uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
 
-    def Xform "factory_gear_large" (
-        prepend references = @../isaacsim_assets/Assets/Isaac/5.0/Isaac/IsaacLab/Factory/factory_gear_large.usd@
-    )
-    {
-        quatd xformOp:orient = (1, 0, 0, 0)
-        double3 xformOp:scale = (1, 1, 1)
-        double3 xformOp:translate = (-0, -0.6, 0.39949157815738634)
-        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
-
-        over "factory_gear_large"
-        {
+            over "visuals"
+            {
+                normal3f[] normals = []
+            }
         }
     }
 
     def Xform "factory_gear_base" (
-        prepend references = @../isaacsim_assets/Assets/Isaac/5.0/Isaac/IsaacLab/Factory/factory_gear_base.usd@
+        prepend references = @/home/lfw/isaacsim_assets/Assets/Isaac/5.0/Isaac/IsaacLab/Factory/factory_gear_base.usd@
     )
     {
+        token visibility = "inherited"
         quatd xformOp:orient = (1, 0, 0, 0)
         double3 xformOp:scale = (1, 1, 1)
         double3 xformOp:translate = (0, -0.6, 0.39949157815738634)
@@ -115,23 +99,71 @@ def Xform "World"
         over "factory_gear_base_loose"
         {
             float physics:mass = 100
+            double3 xformOp:translate = (0, 0, 0)
         }
 
         over "root_joint" (
             active = true
         )
         {
+            rel physics:body1 = </World/factory_gear_base/factory_gear_base_loose>
+            point3f physics:localPos1 = (0, 0.6, -0.39949158)
+            quatf physics:localRot1 = (1, 0, 0, 0)
+        }
+
+        over "Looks"
+        {
+            over "material_0_615686_0_811765_0_929412_0_000000_0_001"
+            {
+                over "Shader"
+                {
+                    color3f inputs:diffuse_color_constant = (0.59, 0.32999998, 1.51)
+                }
+            }
+        }
+
+        def Xform "factory_gear_large" (
+            prepend references = @/home/lfw/isaacsim_assets/Assets/Isaac/5.0/Isaac/IsaacLab/Factory/factory_gear_large.usd@
+        )
+        {
+            token visibility = "inherited"
+            quatd xformOp:orient = (1, 0, 0, 0)
+            double3 xformOp:scale = (1, 1, 1)
+            double3 xformOp:translate = (0, 0, 0.0005084218426136822)
+            uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+
+            over "factory_gear_large"
+            {
+                quatd xformOp:orient = (1, 0, 0, 0)
+                double3 xformOp:scale = (1, 1, 1)
+                double3 xformOp:translate = (0, 0, 0)
+                uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+            }
+
+            over "Looks"
+            {
+                over "material_0_917647_0_917647_0_917647_0_000000_0_000000"
+                {
+                    over "Shader"
+                    {
+                        color3f inputs:diffuse_color_constant = (0.9176, 0.049999997, 0.19)
+                    }
+                }
+            }
         }
     }
 
     def Xform "franka" (
-        prepend references = @../isaacsim_assets/Assets/Isaac/5.0/Isaac/Robots/FrankaRobotics/FactoryFranka/factory_franka_instanceable.usd@
+        prepend references = @/home/lfw/isaacsim_assets/Assets/Isaac/5.0/Isaac/Robots/FrankaRobotics/FactoryFranka/factory_franka_instanceable.usd@
     )
     {
         string isaac:namespace (
             displayName = "Namespace"
             doc = "Namespace of the prim in Isaac Sim"
         )
+        quatd xformOp:orient = (1, 0, 0, 0)
+        double3 xformOp:translate = (0, 0, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
 
         over "panda_hand"
         {
@@ -153,9 +185,11 @@ def Xform "World"
                 float2 clippingRange = (0.01, 10000000)
                 float focalLength = 18.147562
                 float focusDistance = 0.1
-                quatd xformOp:orient = (0.5000000000000001, 0.5, 0.5, 0.49999999999999994)
+                float verticalAperture = 20.955
+                token visibility = "invisible"
+                quatd xformOp:orient = (0.3420201433256689, -0.9396926207859085, 0, 0)
                 double3 xformOp:scale = (1, 1, 1)
-                double3 xformOp:translate = (-5.0306980803327406e-15, 0.15, 0)
+                double3 xformOp:translate = (0.08, 0, 0.08)
                 uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
             }
 
@@ -163,11 +197,25 @@ def Xform "World"
             {
                 float2 clippingRange = (0.01, 10000000)
                 float focalLength = 18.147562
-                float focusDistance = 400
-                quatd xformOp:orient = (0.5000000000000001, 0.5, 0.5, 0.49999999999999994)
+                float focusDistance = 0.1
+                float verticalAperture = 20.955
+                token visibility = "invisible"
+                quatd xformOp:orient = (6.123233995736766e-17, -1, 0, 0)
                 double3 xformOp:scale = (1, 1, 1)
-                double3 xformOp:translate = (-5.0306980803327406e-15, -0.15, 0)
+                double3 xformOp:translate = (-3.725290298461914e-9, 0, 0.08)
                 uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+            }
+
+            over "panda_finger_joint1"
+            {
+                float state:linear:physics:position = 0
+                float state:linear:physics:velocity = 0
+            }
+
+            over "panda_finger_joint2"
+            {
+                float state:linear:physics:position = 0
+                float state:linear:physics:velocity = 0
             }
         }
 
@@ -179,12 +227,15 @@ def Xform "World"
             )
         }
 
-        over "panda_rightfinger"
+        over "panda_rightfinger" (
+            prepend apiSchemas = ["PhysxRigidBodyAPI"]
+        )
         {
             string isaac:nameOverride (
                 displayName = "Name Override"
                 doc = "Name override for prim lookup in base name search"
             )
+            float physxRigidBody:sleepThreshold = 0
         }
 
         over "panda_fingertip_centered"
@@ -193,6 +244,73 @@ def Xform "World"
                 displayName = "Name Override"
                 doc = "Name override for prim lookup in base name search"
             )
+        }
+
+        over "panda_link0"
+        {
+            over "panda_joint1"
+            {
+                float state:angular:physics:position = 0
+                float state:angular:physics:velocity = 0
+            }
+        }
+
+        over "panda_link1"
+        {
+            over "panda_joint2"
+            {
+                float state:angular:physics:position = 0
+                float state:angular:physics:velocity = 0
+            }
+        }
+
+        over "panda_link2"
+        {
+            over "panda_joint3"
+            {
+                float state:angular:physics:position = 0
+                float state:angular:physics:velocity = 0
+            }
+        }
+
+        over "panda_link3"
+        {
+            over "panda_joint4"
+            {
+                float state:angular:physics:position = 0
+                float state:angular:physics:velocity = 0
+            }
+        }
+
+        over "panda_link4"
+        {
+            over "panda_joint5"
+            {
+                float state:angular:physics:position = 0
+                float state:angular:physics:velocity = 0
+            }
+        }
+
+        over "panda_link5"
+        {
+            over "panda_joint6"
+            {
+                float state:angular:physics:position = 0
+                float state:angular:physics:velocity = 0
+            }
+        }
+
+        over "panda_link6"
+        {
+            over "panda_joint7"
+            {
+                float state:angular:physics:position = 0
+                float state:angular:physics:velocity = 0
+            }
+        }
+
+        over "panda_link7"
+        {
         }
     }
 
@@ -224,6 +342,79 @@ def Xform "World"
             uniform token purpose = "guide"
         }
     }
+
+    def Xform "sektion_cabinet_instanceable" (
+        prepend references = @/home/lfw/isaacsim_assets/Assets/Isaac/5.0/Isaac/Props/Sektion_Cabinet/sektion_cabinet_instanceable.usd@
+        variants = {
+            string Physics = "Default"
+        }
+    )
+    {
+        token visibility = "inherited"
+        double3 xformOp:rotateZYX = (0, 0, 0)
+        double3 xformOp:scale = (1, 1, 1)
+        double3 xformOp:translate = (0, -0.8, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:rotateZYX", "xformOp:scale"]
+
+        over "sektion"
+        {
+            over "door_left_joint"
+            {
+                float state:angular:physics:position = 0
+                float state:angular:physics:velocity = 0
+            }
+
+            over "door_right_joint"
+            {
+                float state:angular:physics:position = 0
+                float state:angular:physics:velocity = 0
+            }
+
+            over "drawer_bottom_joint"
+            {
+                float state:linear:physics:position = 0
+                float state:linear:physics:velocity = 0
+            }
+
+            over "drawer_top_joint"
+            {
+                float state:linear:physics:position = 0
+                float state:linear:physics:velocity = 0
+            }
+        }
+
+        over "door_left_link"
+        {
+        }
+
+        over "door_left_nob_link"
+        {
+        }
+
+        over "door_right_link"
+        {
+        }
+
+        over "door_right_nob_link"
+        {
+        }
+
+        over "drawer_bottom"
+        {
+        }
+
+        over "drawer_handle_bottom"
+        {
+        }
+
+        over "drawer_top"
+        {
+        }
+
+        over "drawer_handle_top"
+        {
+        }
+    }
 }
 
 def Xform "Environment"
@@ -244,6 +435,7 @@ def Xform "Environment"
         float inputs:shaping:focus
         color3f inputs:shaping:focusTint
         asset inputs:shaping:ies:file
+        token visibility = "invisible"
         quatd xformOp:orient = (0.6532814824381883, 0.2705980500730985, 0.27059805007309845, 0.6532814824381882)
         double3 xformOp:scale = (1, 1, 1)
         double3 xformOp:translate = (0, 0, 0)
@@ -261,6 +453,7 @@ def Xform "Environment"
         float inputs:shaping:focus
         color3f inputs:shaping:focusTint
         asset inputs:shaping:ies:file
+        token visibility = "invisible"
         quatd xformOp:orient = (0.6532814824381883, -0.27059805007309845, -0.2705980500730985, 0.6532814824381882)
         double3 xformOp:scale = (1, 1, 1)
         double3 xformOp:translate = (0, 0, 0)
@@ -278,6 +471,7 @@ def Xform "Environment"
         float inputs:shaping:focus
         color3f inputs:shaping:focusTint
         asset inputs:shaping:ies:file
+        token visibility = "inherited"
         quatd xformOp:orient = (0.7071067811865476, 0, 0, 0.7071067811865475)
         double3 xformOp:scale = (1, 1, 1)
         double3 xformOp:translate = (0, 0, 0)
@@ -306,20 +500,99 @@ def "Render" (
                 rel camera = </OmniverseKit_Persp>
                 token omni:rtx:background:source:texture:textureMode = "repeatMirrored"
                 token omni:rtx:background:source:type = "domeLight"
+                bool omni:rtx:dlss:frameGeneration = 0
+                bool omni:rtx:material:db:nonVisualMaterialCSV:enabled = 0
                 string omni:rtx:material:db:rtSensorNameToIdMap = "DefaultMaterial:0;AsphaltStandardMaterial:1;AsphaltWeatheredMaterial:2;VegetationGrassMaterial:3;WaterStandardMaterial:4;GlassStandardMaterial:5;FiberGlassMaterial:6;MetalAlloyMaterial:7;MetalAluminumMaterial:8;MetalAluminumOxidizedMaterial:9;PlasticStandardMaterial:10;RetroMarkingsMaterial:11;RetroSignMaterial:12;RubberStandardMaterial:13;SoilClayMaterial:14;ConcreteRoughMaterial:15;ConcreteSmoothMaterial:16;OakTreeBarkMaterial:17;FabricStandardMaterial:18;PlexiGlassStandardMaterial:19;MetalSilverMaterial:20"
+                bool omni:rtx:material:db:syncLoads = 1
+                token omni:rtx:post:dlss:execMode = "performance"
                 bool omni:rtx:post:registeredCompositing:invertColorCorrection = 1
                 bool omni:rtx:post:registeredCompositing:invertToneMap = 1
+                int omni:rtx:pt:clampSpp = 64
                 bool omni:rtx:pt:lightcache:cached:dontResolveConflicts = 1
                 int omni:rtx:pt:maxSamplesPerLaunch = 2073600
+                int omni:rtx:pt:maxVolumeBounces = 4
                 int omni:rtx:pt:mgpu:maxPixelsPerRegionExponent = 12
+                int omni:rtx:pt:samplesPerIteration = 64
+                int omni:rtx:pt:samplesPerPixel = 64
                 color3f omni:rtx:rt:ambientLight:color = (0.1, 0.1, 0.1)
                 bool omni:rtx:rt:demoire = 0
                 bool omni:rtx:rt:ecoMode:enabled
                 bool omni:rtx:rt:lightcache:spatialCache:dontResolveConflicts = 1
+                bool omni:rtx:scene:hydra:materialSyncLoads = 1
+                bool omni:rtx:scene:hydra:mdlMaterialWarmup = 1
+                bool omni:rtx:scene:useViewLightingMode
                 uint omni:rtx:viewTile:limit = 4294967295
                 rel orderedVars = </Render/Vars/LdrColor>
                 custom bool overrideClipRange = 0
-                uniform int2 resolution = (3840, 2160)
+                uniform int2 resolution = (1280, 720)
+            }
+
+            def RenderProduct "Replicator" (
+                prepend apiSchemas = ["OmniRtxSettingsCommonAdvancedAPI_1", "OmniRtxSettingsRtAdvancedAPI_1", "OmniRtxSettingsPtAdvancedAPI_1", "OmniRtxPostColorGradingAPI_1", "OmniRtxPostChromaticAberrationAPI_1", "OmniRtxPostBloomPhysicalAPI_1", "OmniRtxPostMatteObjectAPI_1", "OmniRtxPostCompositingAPI_1", "OmniRtxPostDofAPI_1", "OmniRtxPostMotionBlurAPI_1", "OmniRtxPostTvNoiseAPI_1", "OmniRtxPostTonemapIrayReinhardAPI_1", "OmniRtxPostDebugSettingsAPI_1", "OmniRtxDebugSettingsAPI_1"]
+                hide_in_stage_window = true
+                no_delete = true
+            )
+            {
+                rel camera = </World/franka/panda_hand/wrist_1>
+                token omni:rtx:background:source:texture:textureMode = "repeatMirrored"
+                token omni:rtx:background:source:type = "domeLight"
+                bool omni:rtx:dlss:frameGeneration = 0
+                bool omni:rtx:material:db:nonVisualMaterialCSV:enabled = 0
+                bool omni:rtx:material:db:syncLoads = 1
+                token omni:rtx:post:dlss:execMode = "performance"
+                bool omni:rtx:post:registeredCompositing:invertColorCorrection = 1
+                bool omni:rtx:post:registeredCompositing:invertToneMap = 1
+                int omni:rtx:pt:clampSpp = 64
+                bool omni:rtx:pt:lightcache:cached:dontResolveConflicts = 1
+                int omni:rtx:pt:maxSamplesPerLaunch = 2073600
+                int omni:rtx:pt:maxVolumeBounces = 4
+                int omni:rtx:pt:mgpu:maxPixelsPerRegionExponent = 12
+                int omni:rtx:pt:samplesPerIteration = 64
+                int omni:rtx:pt:samplesPerPixel = 64
+                color3f omni:rtx:rt:ambientLight:color = (0.1, 0.1, 0.1)
+                bool omni:rtx:rt:demoire = 0
+                bool omni:rtx:rt:ecoMode:enabled
+                bool omni:rtx:rt:lightcache:spatialCache:dontResolveConflicts = 1
+                bool omni:rtx:scene:hydra:materialSyncLoads = 1
+                bool omni:rtx:scene:hydra:mdlMaterialWarmup = 1
+                uint omni:rtx:viewTile:limit = 4294967295
+                rel orderedVars = </Render/Vars/LdrColor>
+                custom bool overrideClipRange = 0
+                uniform int2 resolution = (128, 128)
+            }
+
+            def RenderProduct "Replicator_01" (
+                prepend apiSchemas = ["OmniRtxSettingsCommonAdvancedAPI_1", "OmniRtxSettingsRtAdvancedAPI_1", "OmniRtxSettingsPtAdvancedAPI_1", "OmniRtxPostColorGradingAPI_1", "OmniRtxPostChromaticAberrationAPI_1", "OmniRtxPostBloomPhysicalAPI_1", "OmniRtxPostMatteObjectAPI_1", "OmniRtxPostCompositingAPI_1", "OmniRtxPostDofAPI_1", "OmniRtxPostMotionBlurAPI_1", "OmniRtxPostTvNoiseAPI_1", "OmniRtxPostTonemapIrayReinhardAPI_1", "OmniRtxPostDebugSettingsAPI_1", "OmniRtxDebugSettingsAPI_1"]
+                hide_in_stage_window = true
+                no_delete = true
+            )
+            {
+                rel camera = </World/franka/panda_hand/wrist_2>
+                token omni:rtx:background:source:texture:textureMode = "repeatMirrored"
+                token omni:rtx:background:source:type = "domeLight"
+                bool omni:rtx:dlss:frameGeneration = 0
+                bool omni:rtx:material:db:nonVisualMaterialCSV:enabled = 0
+                bool omni:rtx:material:db:syncLoads = 1
+                token omni:rtx:post:dlss:execMode = "performance"
+                bool omni:rtx:post:registeredCompositing:invertColorCorrection = 1
+                bool omni:rtx:post:registeredCompositing:invertToneMap = 1
+                int omni:rtx:pt:clampSpp = 64
+                bool omni:rtx:pt:lightcache:cached:dontResolveConflicts = 1
+                int omni:rtx:pt:maxSamplesPerLaunch = 2073600
+                int omni:rtx:pt:maxVolumeBounces = 4
+                int omni:rtx:pt:mgpu:maxPixelsPerRegionExponent = 12
+                int omni:rtx:pt:samplesPerIteration = 64
+                int omni:rtx:pt:samplesPerPixel = 64
+                color3f omni:rtx:rt:ambientLight:color = (0.1, 0.1, 0.1)
+                bool omni:rtx:rt:demoire = 0
+                bool omni:rtx:rt:ecoMode:enabled
+                bool omni:rtx:rt:lightcache:spatialCache:dontResolveConflicts = 1
+                bool omni:rtx:scene:hydra:materialSyncLoads = 1
+                bool omni:rtx:scene:hydra:mdlMaterialWarmup = 1
+                uint omni:rtx:viewTile:limit = 4294967295
+                rel orderedVars = </Render/Vars/LdrColor>
+                custom bool overrideClipRange = 0
+                uniform int2 resolution = (128, 128)
             }
         }
     }
@@ -329,7 +602,11 @@ def "Render" (
         no_delete = true
     )
     {
-        rel products = </Render/OmniverseKit/HydraTextures/omni_kit_widget_viewport_ViewportTexture_0>
+        rel products = [
+            </Render/OmniverseKit/HydraTextures/omni_kit_widget_viewport_ViewportTexture_0>,
+            </Render/OmniverseKit/HydraTextures/Replicator>,
+            </Render/OmniverseKit/HydraTextures/Replicator_01>,
+        ]
     }
 
     def "Vars"

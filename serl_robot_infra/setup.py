@@ -19,5 +19,6 @@ setup(
         "flask",
         "defusedxml",
         "pygame>=2.0.0",
+        "numpy<2.0",
     ],
 )

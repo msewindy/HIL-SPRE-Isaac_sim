@@ -377,13 +377,13 @@ def main(_):
     env = config.get_environment(
         fake_env=use_fake_env,
         save_video=FLAGS.save_video,
-        classifier=True,
+        classifier=not use_fake_env, # [FIX] Use Logic Reward for Sim, Classifier for Real
     )
     env = RecordEpisodeStatistics(env)
 
     rng, sampling_rng = jax.random.split(rng)
     
-    if config.setup_mode == 'single-arm-fixed-gripper' or config.setup_mode == 'dual-arm-fixed-gripper':   
+    if config.setup_mode == 'single-arm-fixed-gripper' or config.setup_mode == 'dual-arm-fixed-gripper' or config.setup_mode == 'single-arm-continuous-gripper':   
         agent: SACAgent = make_sac_pixel_agent(
             seed=FLAGS.seed,
             sample_obs=env.observation_space.sample(),

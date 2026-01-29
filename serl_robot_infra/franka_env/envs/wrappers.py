@@ -293,6 +293,11 @@ class GamepadIntervention(gym.ActionWrapper):
         self.left, self.right = False, False
         self.x_button, self.y_button = False, False
         self._y_button_pressed = False  # 用于边缘触发检测
+        
+        # Gripper state initialization
+        # Mark as uninitialized to sync with env on first action
+        self.gripper_val = 0.0 
+        self.gripper_initialized = False
         self.action_indices = action_indices
     
     def action(self, action: np.ndarray) -> Tuple[np.ndarray, bool]:
@@ -337,15 +342,46 @@ class GamepadIntervention(gym.ActionWrapper):
         
         # Handle gripper control
         if self.gripper_enabled:
-            if self.left:  # A button: close gripper
-                gripper_action = np.random.uniform(-1, -0.9, size=(1,))
+            # [FIX] First Run Initialization: Sync with current env state
+            if not self.gripper_initialized:
+                try:
+                    # Try to get current gripper pos from base env (0.0=Close, 1.0=Open)
+                    base_env = self.env.unwrapped
+                    if hasattr(base_env, 'curr_gripper_pos') and base_env.curr_gripper_pos is not None:
+                         # Use raw [0, 1] directly
+                         self.gripper_val = float(base_env.curr_gripper_pos[0])
+                    else:
+                         self.gripper_val = 1.0 
+                except Exception as e:
+                    self.gripper_val = 1.0
+                self.gripper_initialized = True
+
+            # Step size for incremental control (adjust for speed)
+            step_size = 0.05
+            
+            # Check for button presses
+            if self.left:  # A button: Close
+                self.gripper_val = max(0.0, self.gripper_val - step_size) # Clamp to 0.0
                 intervened = True
-            elif self.right:  # B button: open gripper
-                gripper_action = np.random.uniform(0.9, 1, size=(1,))
+                self.gripper_latched = True # [NEW] Latch gripper control
+            elif self.right:  # B button: Open
+                self.gripper_val = min(1.0, self.gripper_val + step_size) # Clamp to 1.0
                 intervened = True
-            else:
-                gripper_action = np.zeros((1,))
-            expert_a = np.concatenate((expert_a, gripper_action), axis=0)
+                self.gripper_latched = True # [NEW] Latch gripper control
+            
+            # [NEW] Check for X button (Release Latch)
+            if self.x_button:
+                if getattr(self, 'gripper_latched', False):
+                     print("[INFO] Gamepad: Gripper Latch RELEASED (AI Resume)")
+                self.gripper_latched = False
+
+            
+            # Action Mapping: [0, 1] (User/Logic) -> [-1, 1] (Env/Policy Standard)
+            env_gripper_val = self.gripper_val * 2.0 - 1.0
+            
+            # Construction of Gamepad Action (7-DOF)
+            # If intervened (Arm moved OR Buttons pressed), we use Gamepad Action
+            expert_a = np.concatenate((expert_a, [env_gripper_val]), axis=0)
         
         # Filter action indices if specified
         if self.action_indices is not None:
@@ -353,8 +389,22 @@ class GamepadIntervention(gym.ActionWrapper):
             filtered_expert_a[self.action_indices] = expert_a[self.action_indices]
             expert_a = filtered_expert_a
         
+        # [CRITICAL LOGIC FIX]
+        # If Gamepad is active (Arm moved OR Button pressed), return Gamepad Action
         if intervened:
             return expert_a, True
+        
+        # If Gamepad is Idle (Sticks zero, Buttons up), we fall back to Policy Action
+        # BUT, if we have "Latched" the gripper (user previously touched it),
+        # we must OVERRIDE the Policy's gripper command to prevent "Snap Back".
+        if getattr(self, 'gripper_latched', False):
+            # Create a copy to avoid modifying original policy action in place (if it's reused)
+            final_action = action.copy()
+            # Override gripper channel (Index 6)
+            # Ensure action shape is correct
+            if len(final_action) >= 7:
+                 final_action[6] = env_gripper_val
+            return final_action, False
         
         return action, False
     

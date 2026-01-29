@@ -57,6 +57,9 @@ class IsaacSimGearAssemblyEnvEnhanced(IsaacSimFrankaEnv):
         self.enable_domain_randomization = enable_domain_randomization
         self.domain_randomization_params = {}
         
+        # Gear 与夹爪的约束状态
+        self.gear_grasp_constraint = None
+
         # 调用基类初始化
         super().__init__(**kwargs)
         
@@ -134,21 +137,27 @@ class IsaacSimGearAssemblyEnvEnhanced(IsaacSimFrankaEnv):
         # 移动到重置位置
         self.go_to_reset(joint_reset=False)
         
+        # [DRIFT FIX] Initialize last_commanded_pose to the commanded reset pose
+        # Since we just moved to reset (using go_to_reset), we should anchor the control loop here.
+        # Note: go_to_reset uses _get_reset_pose internally.
+        self.last_commanded_pose = self._get_reset_pose()
+        print(f"[DEBUG-RESET] Config Pose: {self.config.RESET_POSE}")
+        print(f"[DEBUG-RESET] Calculated Reset Pose: {np.round(self.last_commanded_pose, 3)}")
+        
         # 重置路径长度
         self.curr_path_length = 0
         
-        # 更新当前位置
-        self._update_currpos()
+        # [MODIFIED] Explicitly trigger server-side scene reset to apply domain randomization
+        print("[INFO] GearEnv: Triggering Server Scene Reset (Randomized)...")
+        self.reset_scene()
         
-        # 重置 gear_medium 位置（如果不在夹爪中）
-        # 注意：如果 gear_medium 被夹爪抓住，不应该重置位置
-        if self.gear_grasp_constraint is None:
-            self._reset_gear_medium_to_holder()
+        # Call super().reset() to ensure robot moves to reset pose and returns observation
+        obs, _ = super().reset(**kwargs)
         
-        # 获取观察
-        obs = self._get_obs()
+        # Get observation again just in case (though super().reset() returns it)
+        # obs = self._get_obs()
         
-        # 重置终止标志
+        # Reset terminate flag
         self.terminate = False
         
         return obs, {}
@@ -214,6 +223,7 @@ class IsaacSimGearAssemblyEnvEnhanced(IsaacSimFrankaEnv):
         
         # 8. 移动到重置位置
         reset_pose = self._get_reset_pose()
+        print(f"[VERIFY] Client Reset Pose: {np.round(reset_pose, 4)}")
         self._send_pos_command(reset_pose)
         time.sleep(0.5)
     
@@ -307,3 +317,108 @@ class IsaacSimGearAssemblyEnvEnhanced(IsaacSimFrankaEnv):
         # }
         
         return {}
+
+    def compute_reward(self, obs: Dict) -> float:
+        """
+        计算奖励 (Ground Truth Reward) - Geometric Logic
+        
+        Constraints:
+        1. Alignment: Gear Z-axis parallel to Base Z-axis (cos_theta > 0.97)
+        2. Centering: Gear Origin XY close to Base Origin XY (dist_xy < 1cm)
+           (Both Pin and Hole are at local (0.02, 0), so Origins should align)
+        3. Insertion: Gear Z < 0.42 (World Frame)
+        """
+        try:
+            # Check if we have object states from server
+            # [DEBUG] Force print periodically to check data presence
+            if hasattr(self, "_rt_debug_counter"):
+                 self._rt_debug_counter += 1
+            else:
+                 self._rt_debug_counter = 0
+            
+            if self._rt_debug_counter % 60 == 0:
+                 has_states = hasattr(self, "object_states") and bool(self.object_states)
+                 print(f"[REWARD-DEBUG] Step {self._rt_debug_counter}: HasStates={has_states}")
+                 if has_states:
+                     print(f" -> Keys: {list(self.object_states.keys())}")
+            
+            if hasattr(self, "object_states") and self.object_states:
+                gear_state = self.object_states.get("gear_medium")
+                base_state = self.object_states.get("gear_base")
+                
+                if gear_state is not None and base_state is not None:
+                    # 1. Extract Poses
+                    gear_pos = np.array(gear_state[:3])
+                    gear_quat = np.array(gear_state[3:]) # xyzw
+                    
+                    base_pos = np.array(base_state[:3])
+                    base_quat = np.array(base_state[3:]) # xyzw
+                    
+                    # 2. Check Z-Axis Alignment
+                    # Quat to Rotation Matrix Z-vector
+                    # R * [0,0,1]^T is the third column of R
+                    from scipy.spatial.transform import Rotation as R
+                    
+                    # Scipy uses (x, y, z, w), my tracking sends (x, y, z, w)
+                    r_gear = R.from_quat(gear_quat).as_matrix()
+                    r_base = R.from_quat(base_quat).as_matrix()
+                    
+                    gear_z = r_gear[:, 2] # 3rd column
+                    base_z = r_base[:, 2]
+                    
+                    # Dot product for alignment
+                    dot_z = np.dot(gear_z, base_z)
+                    # Threshold: < 5 degrees
+                    # cos(5) ~= 0.99619
+                    alignment_ok = dot_z > 0.996 
+                    
+                    # 3. Check XY Centering (Relative to Base Frame)
+                    from scipy.spatial.transform import Rotation as R
+                    
+                    # A. Get Gear's Geometric Center (Hole) in World Frame
+                    # Offset (0.02, 0, 0) in Gear Frame -> World Frame
+                    gear_center_offset_local = np.array([0.02, 0.0, 0.0])
+                    r_gear = R.from_quat(gear_quat)
+                    gear_hole_world = gear_pos + r_gear.apply(gear_center_offset_local)
+                    
+                    # B. Transform Gear Hole into Base Local Frame
+                    # P_local = R_base_inv * (P_world - P_base_origin)
+                    r_base = R.from_quat(base_quat)
+                    r_base_inv = r_base.inv()
+                    
+                    rel_pos = gear_hole_world - base_pos
+                    hole_in_base_frame = r_base_inv.apply(rel_pos)
+                    
+                    # C. Check Proximity to Pin Location (0.02, 0.0, 0.0)
+                    # User requirement: x in [0.018, 0.022]
+                    # We also implictly check Y is close to 0 to ensure it's actually on the pin
+                    
+                    x_error = abs(hole_in_base_frame[0] - 0.02)
+                    y_error = abs(hole_in_base_frame[1])
+                    
+                    # Threshold: 2mm tolerance on X (0.018-0.022) and Y
+                    centering_ok = (x_error < 0.002) and (y_error < 0.002)
+                    
+                    # 4. Check Z Insertion
+                    insertion_ok = gear_pos[2] < 0.402
+                    
+                    success = alignment_ok and centering_ok and insertion_ok
+                    
+                    if success:
+                        print(f"\n[REWARD-SUCCESS] Reward Triggered!")
+                        print(f"  -> Gear Z-Height: {gear_pos[2]:.4f} (Thresh: < 0.402)")
+                        print(f"  -> Z-Alignment: {dot_z:.4f} (Thresh: > 0.996)")
+                        print(f"  -> Hole in Base Frame: {hole_in_base_frame} (Target: [0.02, 0, 0])")
+                        print(f"  -> Errors: X_err={x_error:.4f}, Y_err={y_error:.4f} (Thresh: 0.002)")
+                        print(f"  -> Raw Gear Pos: {gear_pos}")
+                        print(f"  -> Raw Base Pos: {base_pos}")
+                        return 1.0
+                    return 0.0
+                    
+        except Exception as e:
+            # print(f"[WARNING] GT Reward calculation failed: {e}")
+            pass
+            
+        # Fallback to TCP logic if GT fails (e.g. at start)
+        return super().compute_reward(obs)
+

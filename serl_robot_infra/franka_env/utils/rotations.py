@@ -9,28 +9,9 @@ def quat_2_euler(quat):
 
 
 def euler_2_quat(xyz):
-    yaw, pitch, roll = xyz
-    yaw = np.pi - yaw
-    yaw_matrix = np.array(
-        [
-            [np.cos(yaw), -np.sin(yaw), 0.0],
-            [np.sin(yaw), np.cos(yaw), 0.0],
-            [0, 0, 1.0],
-        ]
-    )
-    pitch_matrix = np.array(
-        [
-            [np.cos(pitch), 0.0, np.sin(pitch)],
-            [0.0, 1.0, 0.0],
-            [-np.sin(pitch), 0, np.cos(pitch)],
-        ]
-    )
-    roll_matrix = np.array(
-        [
-            [1.0, 0, 0],
-            [0, np.cos(roll), -np.sin(roll)],
-            [0, np.sin(roll), np.cos(roll)],
-        ]
-    )
-    rot_mat = yaw_matrix.dot(pitch_matrix.dot(roll_matrix))
-    return Quaternion(matrix=rot_mat).elements
+    """
+    Converts euler angles (roll, pitch, yaw) in 'xyz' intrinsic order to quaternion [x, y, z, w].
+    Note: Updated to return XYZW to match Scipy/SERL standards.
+    """
+    from scipy.spatial.transform import Rotation as R
+    return R.from_euler("xyz", xyz).as_quat()

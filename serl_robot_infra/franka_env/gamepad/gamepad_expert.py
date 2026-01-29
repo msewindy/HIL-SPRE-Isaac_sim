@@ -6,6 +6,7 @@ import multiprocessing
 import numpy as np
 from typing import Tuple
 import time
+import os
 
 try:
     import pygame
@@ -76,6 +77,7 @@ class GamepadExpert:
             raise ImportError("pygame is required for gamepad support. Install with: pip install pygame")
         
         # Initialize pygame
+        os.environ["SDL_VIDEODRIVER"] = "dummy"
         pygame.init()
         pygame.joystick.init()
         
@@ -109,6 +111,7 @@ class GamepadExpert:
     def _read_gamepad(self):
         """Continuously read gamepad state (runs in separate process)."""
         # Initialize pygame in this process
+        os.environ["SDL_VIDEODRIVER"] = "dummy"
         pygame.init()
         pygame.joystick.init()
         
@@ -241,9 +244,28 @@ class GamepadExpert:
                 action = [0.0] * 6
                 buttons = [0, 0, 0, 0]
             
+            # Debug: Print raw values occasionally
+            if hasattr(self, '_debug_counter'):
+                self._debug_counter += 1
+            else:
+                self._debug_counter = 0
+            
+            if self._debug_counter % 100 == 0:  # Print every 100 ticks (approx 1 sec)
+                if any(abs(a) > 0.01 for a in action):
+                    print(f"[DEBUG] Gamepad Raw Action: {action}")
+            
             # Update shared state
-            self.latest_data["action"] = action
-            self.latest_data["buttons"] = buttons
+            try:
+                self.latest_data["action"] = action
+                self.latest_data["buttons"] = buttons
+            except (ConnectionResetError, FileNotFoundError, BrokenPipeError, EOFError):
+                 # Main process probably died (Manager shutdown)
+                 # Exit gracefully without crashing
+                 break
+            except Exception as e:
+                 # Unexpected error
+                 print(f"[ERROR] Shared memory write error: {e}")
+                 break
             
             # Control update rate (similar to SpaceMouse)
             clock.tick(100)  # 100 Hz update rate

@@ -42,14 +42,15 @@ class EnvConfig(DefaultEnvConfig):
         "wrist_2": lambda img: img[100:500, 400:900],
     }
     # TODO: 根据实际测量值更新以下位姿配置
-    TARGET_POSE = np.array([0.5881241235410154, -0.03578590131997776, 0.27843494179085326, np.pi, 0, 0])
-    GRASP_POSE = np.array([0.5857508505445138, -0.22036261105675414, 0.2731021902359492, np.pi, 0, 0])
-    RESET_POSE = TARGET_POSE + np.array([0, 0, 0.05, 0, 0.05, 0])
+    TARGET_POSE = np.array([0.0, -0.60, 0.42, 0, np.pi, 0])
+    GRASP_POSE = np.array([0.01, -0.75, 0.40, 0, np.pi, 0])
+    # Safer RESET: Higher and closer to base to avoid elbow singularity/drift
+    RESET_POSE = np.array([0.0, -0.4, 0.55, 0, np.pi, 0])
     ABS_POSE_LIMIT_LOW = TARGET_POSE - np.array([0.03, 0.02, 0.01, 0.01, 0.1, 0.4])
     ABS_POSE_LIMIT_HIGH = TARGET_POSE + np.array([0.03, 0.02, 0.05, 0.01, 0.1, 0.4])
-    RANDOM_RESET = True
-    RANDOM_XY_RANGE = 0.02
-    RANDOM_RZ_RANGE = 0.05
+    RANDOM_RESET = False
+    RANDOM_XY_RANGE = 0.0
+    RANDOM_RZ_RANGE = 0.0
     ACTION_SCALE = (0.01, 0.06, 1)
     DISPLAY_IMAGE = True
     MAX_EPISODE_LENGTH = 100
@@ -120,30 +121,41 @@ class IsaacSimEnvConfig(DefaultEnvConfig):
     
     # 图像裁剪配置（与真实环境相同）
     IMAGE_CROP = {
-        "wrist_1": lambda img: img[150:450, 350:1100],
-        "wrist_2": lambda img: img[100:500, 400:900],
+        # [FIX] Square Cropping (300x300) for Sim (Resized to 128x128 later)
+        # Wrist 1 Center: (300, 725) -> Y[150:450], X[575:875]
+        "wrist_1": lambda img: img[150:450, 575:875],
+        # Wrist 2 Center: (300, 650) -> Y[150:450], X[500:800]
+        "wrist_2": lambda img: img[150:450, 500:800],
     }
     
-    # TODO: 根据实际测量值更新以下位姿配置
-    # TARGET_POSE: gear_medium 安装到 gear_base 的目标位姿
-    # GRASP_POSE: 抓取 gear_medium 的位姿
-    TARGET_POSE = np.array([0.5881241235410154, -0.03578590131997776, 0.27843494179085326, np.pi, 0, 0])
-    GRASP_POSE = np.array([0.5857508505445138, -0.22036261105675414, 0.2731021902359492, np.pi, 0, 0])
-    RESET_POSE = TARGET_POSE + np.array([0, 0, 0.05, 0, 0.05, 0])
-    ABS_POSE_LIMIT_LOW = TARGET_POSE - np.array([0.03, 0.02, 0.01, 0.01, 0.1, 0.4])
-    ABS_POSE_LIMIT_HIGH = TARGET_POSE + np.array([0.03, 0.02, 0.05, 0.01, 0.1, 0.4])
+    # [OPTIMIZATION] 根据 Franka 约 855mm 的臂展和 USD 场景中物体的实际分布进行调整：
+    # 1. TARGET_POSE: 组装目标位姿（大齿轮/底座位置 y=-0.6, z~0.41）
+    TARGET_POSE = np.array([0.0, -0.60, 0.42, 0, np.pi, 0])
+    # 2. GRASP_POSE: 抓取位姿（中齿轮初始位置 y=-0.75, z~0.40）。
+    # 注意：y=-0.75 已经接近 Franka 的最大展弦比，建议不要再往外远了。
+    GRASP_POSE = np.array([0.01, -0.75, 0.40, 0, np.pi, 0])
+    
+    # 3. RESET_POSE: Safer position
+    # User requested [1, 0, 0, 0] quaternion, which corresponds to Rx=pi
+    RESET_POSE = np.array([0.0, -0.4, 0.55, 0, np.pi, 0])
+    
+    # 4. 安全区 (Safety Box): 必须包含以上所有点，并留有足够扰动空间。
+    # 设置为以 TARGET_POSE 为中心，±0.15m (X), ±0.20m (Y), ±0.25m (Z) 的大包络面。
+    # [FIX] Widen limits to include RESET_POSE (y=-0.4)
+    ABS_POSE_LIMIT_LOW = TARGET_POSE - np.array([0.2, 0.4, 0.01, 0.5, 0.5, 0.5])
+    ABS_POSE_LIMIT_HIGH = TARGET_POSE + np.array([0.2, 0.4, 0.30, 0.5, 0.5, 0.5])
     
     # 随机重置配置
-    RANDOM_RESET = True
-    RANDOM_XY_RANGE = 0.02
-    RANDOM_RZ_RANGE = 0.05
+    RANDOM_RESET = False
+    RANDOM_XY_RANGE = 0.0
+    RANDOM_RZ_RANGE = 0.0
     
     # 动作缩放
     ACTION_SCALE = (0.01, 0.06, 1)
     
     # 其他配置
     DISPLAY_IMAGE = True
-    MAX_EPISODE_LENGTH = 100
+    MAX_EPISODE_LENGTH = 4800
     
     # 为了兼容性，定义空字典或默认值（如果基类需要）
     COMPLIANCE_PARAM: Dict[str, float] = {}
@@ -167,7 +179,7 @@ class TrainConfig(DefaultTrainingConfig):
     checkpoint_period = 5000
     steps_per_update = 50
     encoder_type = "resnet-pretrained"
-    setup_mode = "single-arm-fixed-gripper"
+    setup_mode = "single-arm-continuous-gripper"
 
     def get_environment(self, fake_env=False, save_video=False, classifier=False):
         """
@@ -208,7 +220,8 @@ class TrainConfig(DefaultTrainingConfig):
         
         # ========== 环境包装器（真实和仿真环境共用）==========
         # 1. 固定夹爪包装器（任务要求夹爪关闭）
-        env = GripperCloseEnv(env)
+        # [FIX] Disabled strict gripper closing to allow Gamepad control for demo recording
+        # env = GripperCloseEnv(env)
         
         # 2. SpaceMouse 干预（真实环境必需，仿真环境可选）
         if not fake_env:
@@ -216,9 +229,16 @@ class TrainConfig(DefaultTrainingConfig):
             env = SpacemouseIntervention(env)
         # 注意：仿真环境也可以使用 SpaceMouse（如果已连接）
         # 如果需要，可以取消下面的注释：
-        # else:
-        #     # 可选：仿真环境也支持 SpaceMouse
-        #     env = SpacemouseIntervention(env)
+        else:
+            # [新增] 仿真环境：使用手柄控制
+            try:
+                from franka_env.envs.wrappers import GamepadIntervention
+                env = GamepadIntervention(env, joystick_id=0, sensitivity=0.2)
+                print("[INFO] Using Gamepad for intervention in Simulation (Sensitivity=0.2)")
+                # print("[INFO] Gamepad intervention disabled for stability testing")
+            except ImportError:
+                print("[WARNING] Gamepad wrapper not found, falling back to SpaceMouse or No-Intervention")
+                # env = SpacemouseIntervention(env) # 如果想回退到 SpaceMouse
         
         # 3. 相对坐标系包装器
         env = RelativeFrame(env)
@@ -243,8 +263,8 @@ class TrainConfig(DefaultTrainingConfig):
 
             def reward_func(obs):
                 sigmoid = lambda x: 1 / (1 + jnp.exp(-x))
-                # added check for z position to further robustify classifier, but should work without as well
-                return int(sigmoid(classifier(obs)) > 0.85 and obs['state'][0, 6] > 0.04)
+                # [FIX] Use index -1 for gripper_pose as index 6 points to tcp_vel[0] due to Quat2EulerWrapper
+                return int(sigmoid(classifier(obs)) > 0.85 and obs['state'][0, -1] > 0.04)
 
             env = MultiCameraBinaryRewardClassifierWrapper(env, reward_func)
         

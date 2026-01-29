@@ -190,14 +190,18 @@ class FrankaEnv(gym.Env):
         euler = Rotation.from_quat(pose[3:]).as_euler("xyz")
 
         # Clip first euler angle separately due to discontinuity from pi to -pi
-        sign = np.sign(euler[0])
-        euler[0] = sign * (
-            np.clip(
-                np.abs(euler[0]),
-                self.rpy_bounding_box.low[0],
-                self.rpy_bounding_box.high[0],
+        # [ROBUSTNESS] If the range includes pi, we must be careful with sign flips.
+        # For now, we allow the full range [-pi, pi] to avoid jittering near the boundary.
+        # We only clip if the limit is strictly less than pi.
+        if self.rpy_bounding_box.high[0] < 3.1: 
+            sign = np.sign(euler[0])
+            euler[0] = sign * (
+                np.clip(
+                    np.abs(euler[0]),
+                    self.rpy_bounding_box.low[0],
+                    self.rpy_bounding_box.high[0],
+                )
             )
-        )
 
         euler[1:] = np.clip(
             euler[1:], self.rpy_bounding_box.low[1:], self.rpy_bounding_box.high[1:]
@@ -284,15 +288,38 @@ class FrankaEnv(gym.Env):
         return images
 
     def interpolate_move(self, goal: np.ndarray, timeout: float):
-        """Move the robot to the goal position with linear interpolation."""
+        """Move the robot to the goal position with linear interpolation for pos and SLERP for orientation."""
         if goal.shape == (6,):
             goal = np.concatenate([goal[:3], euler_2_quat(goal[3:])])
         steps = int(timeout * self.hz)
+        if steps <= 1:
+            self._send_pos_command(goal)
+            return
+            
         self._update_currpos()
-        path = np.linspace(self.currpos, goal, steps)
-        for p in path:
+        start_pose = self.currpos.copy()
+        # [DIAGNOSTIC] Log interpolation range
+        print(f"[DEBUG] Interp Start: {np.round(start_pose[:3], 3)} End: {np.round(goal[:3], 3)}")
+        
+        # Linear position path
+        pos_path = np.linspace(start_pose[:3], goal[:3], steps)
+        
+        # SLERP orientation path
+        from scipy.spatial.transform import Rotation as R
+        from scipy.spatial.transform import Slerp
+        
+        key_rots = R.from_quat([start_pose[3:], goal[3:]])
+        key_times = [0, 1]
+        slerp = Slerp(key_times, key_rots)
+        
+        interp_times = np.linspace(0, 1, steps)
+        quat_path = slerp(interp_times).as_quat()
+        
+        for i in range(steps):
+            p = np.concatenate([pos_path[i], quat_path[i]])
             self._send_pos_command(p)
             time.sleep(1 / self.hz)
+            
         self.nextpos = p
         self._update_currpos()
 

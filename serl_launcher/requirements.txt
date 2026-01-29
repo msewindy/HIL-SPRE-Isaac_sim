@@ -19,4 +19,4 @@ gymnasium==0.29.1
 tf-keras
 pynput
 natsort
-matplotlib
+matplotlib>=3.9.0
