@@ -142,8 +142,8 @@ class IsaacSimEnvConfig(DefaultEnvConfig):
     # 4. 安全区 (Safety Box): 必须包含以上所有点，并留有足够扰动空间。
     # 设置为以 TARGET_POSE 为中心，±0.15m (X), ±0.20m (Y), ±0.25m (Z) 的大包络面。
     # [FIX] Widen limits to include RESET_POSE (y=-0.4)
-    ABS_POSE_LIMIT_LOW = TARGET_POSE - np.array([0.2, 0.4, 0.01, 0.5, 0.5, 0.5])
-    ABS_POSE_LIMIT_HIGH = TARGET_POSE + np.array([0.2, 0.4, 0.30, 0.5, 0.5, 0.5])
+    ABS_POSE_LIMIT_LOW = TARGET_POSE - np.array([0.15, 0.4, 0.01, 0.5, 0.5, 0.5])
+    ABS_POSE_LIMIT_HIGH = TARGET_POSE + np.array([0.15, 0.4, 0.30, 0.5, 0.5, 0.5])
     
     # 随机重置配置
     RANDOM_RESET = False
