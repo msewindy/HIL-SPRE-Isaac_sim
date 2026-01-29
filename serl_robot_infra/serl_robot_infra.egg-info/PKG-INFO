@@ -15,4 +15,5 @@ Requires-Dist: requests
 Requires-Dist: flask
 Requires-Dist: defusedxml
 Requires-Dist: pygame>=2.0.0
+Requires-Dist: numpy<2.0
 Dynamic: requires-dist

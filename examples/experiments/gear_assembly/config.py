@@ -109,7 +109,7 @@ class IsaacSimEnvConfig(DefaultEnvConfig):
     """
     
     # Isaac Sim 服务器 URL（指向 isaac_sim_server.py）
-    SERVER_URL = "http://127.0.0.1:5001/"
+    SERVER_URL = "http://192.168.31.198:5001/"
     
     # 虚拟相机配置（Isaac Sim 使用虚拟相机）
     # 注意：对于 Isaac Sim 环境，只需要键名，字段值（serial_number、dim、exposure）不使用
