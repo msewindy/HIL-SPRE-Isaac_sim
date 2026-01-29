@@ -2052,38 +2052,52 @@ class IsaacSimServer:
     
     
     def _execute_reset_scene(self):
-        """实际执行场景重置（在主线程调用）"""
+        """实际执行场景重置（在主线程调用）
+        顺序：先解绑齿轮与夹爪（若存在）→ 夹爪打开 → world.reset() → 机械臂回初始位置 → 齿轮位置随机摆放 → base 随机 → warmup
+        避免机械臂与齿轮仍绑在一起时同时复位，导致机械臂把齿轮甩飞。
+        """
         self._log("[INFO] Executing Safe Scene Reset on Main Thread...")
         try:
-             # 重置物理世界（这会重置所有物理对象到初始状态）
+            # ---------- 1. 先解绑齿轮与机械臂（若存在），避免复位时机械臂把齿轮甩飞 ----------
+            if self.grasp_joint is not None:
+                stage = self.get_current_stage()
+                if self.grasp_joint.GetPrim().IsValid():
+                    stage.RemovePrim(self.grasp_joint.GetPrim().GetPath())
+                    self._log("[INFO] Reset: Unbound gear from gripper (removed grasp FixedJoint).")
+                self.grasp_joint = None
+            
+            # 夹爪打开，确保齿轮不再被夹持
+            self._execute_set_gripper(1.0)
+            
+            # ---------- 2. 重置物理世界 ----------
             self.world.reset()
             
-            # 重置机器人到初始关节位置（如果需要）
-            # 注意：world.reset() 通常已经重置了机器人，但可以显式设置
+            # ---------- 3. 机械臂先回到初始位置 ----------
             if hasattr(self.franka, 'set_joint_positions'):
-                # 设置到初始关节位置（通常是零位或配置的初始位置）
-                # Use self.initial_q if available, else zeros
-                # [FIX] Franka 包含夹爪共 9 个自由度，必须传递完整数组，否则会报 shape mismatch (expected 9, got 7)
                 initial_joint_positions = getattr(self, 'initial_q', np.zeros(9))
-                
                 self._log(f"[INFO] Resetting robot joints to: {np.round(initial_joint_positions, 3)}")
                 self.franka.set_joint_positions(initial_joint_positions)
+            self._execute_set_gripper(1.0)  # 复位后再次确保夹爪打开
             
-            # 重置夹爪到打开状态
-            self._execute_set_gripper(1.0)  # 直接调用内部方法，不需要再入队
-            
-            # [DOMAIN RANDOMIZATION]
+            # ---------- 4. 齿轮再进入位置随机摆放（在机械臂已复位之后） ----------
             try:
                 from pxr import Gf, UsdGeom
                 stage = self.get_current_stage()
                 
-                # 1. Randomize Gear Medium Position
-                # Random range: x:[-0.15, 0.15], y:[-0.2, -0.45]
+                # 1) 齿轮位置随机摆放（机械臂已复位后再设，避免甩飞）
+                # Random range: x:[-0.15, 0.15], y:[-0.52, -0.45]
                 gear_prim_path = "/World/factory_gear_medium"
                 gear_prim = stage.GetPrimAtPath(gear_prim_path)
-                    
+                if not gear_prim.IsValid():
+                    child = stage.GetPrimAtPath("/World/factory_gear_medium/factory_gear_medium")
+                    if child.IsValid():
+                        gear_prim = child.GetParent()  # 对父 Xform 设位置
+                    else:
+                        gear_prim = child  # 保持 invalid
+                if not gear_prim.IsValid():
+                    self._log(f"[WARNING] Reset: gear_medium prim not found at {gear_prim_path}, gear may disappear after reset.")
                 if gear_prim.IsValid():
-                    rand_x = np.random.uniform(-0.15, 0.15)
+                    rand_x = np.random.uniform(-0.10, 0.10)
                     rand_y = np.random.uniform(-0.52, -0.45)
                     
                     xform_gear = UsdGeom.Xformable(gear_prim)
@@ -2110,7 +2124,7 @@ class IsaacSimServer:
                         # self._log("[WARNING] No translate op found for gear_medium")
                         pass
                 
-                # 2. Randomize Gear Base Rotation
+                # 2) Randomize Gear Base Rotation
                 # Random range: Z-axis +/- 10 degrees
                 base_prim_path = "/World/factory_gear_base"
                 base_prim = stage.GetPrimAtPath(base_prim_path)

@@ -119,13 +119,14 @@ class IsaacSimEnvConfig(DefaultEnvConfig):
         "wrist_2": {},  # 字段值在 Isaac Sim 中不使用
     }
     
-    # 图像裁剪配置（与真实环境相同）
+    # 图像裁剪配置（Isaac Sim 相机 1280x720，img 为 [H, W] = [720, 1280]）
     IMAGE_CROP = {
-        # [FIX] Square Cropping (300x300) for Sim (Resized to 128x128 later)
-        # Wrist 1 Center: (300, 725) -> Y[150:450], X[575:875]
-        "wrist_1": lambda img: img[150:450, 575:875],
-        # Wrist 2 Center: (300, 650) -> Y[150:450], X[500:800]
-        "wrist_2": lambda img: img[150:450, 500:800],
+        # wrist_1: 720x720，按原图高做正方形截取（居中）
+        # 原图中心 (640, 360)，取宽 720 居中 → col 280:1000, row 0:720
+        "wrist_1": lambda img: img[0:720, 280:1000],
+        # wrist_2: 500x500，严格以原图正中心 (640, 360) 为裁剪中心
+        # col 390:890, row 110:610
+        "wrist_2": lambda img: img[110:610, 390:890],
     }
     
     # [OPTIMIZATION] 根据 Franka 约 855mm 的臂展和 USD 场景中物体的实际分布进行调整：

@@ -7,8 +7,8 @@
                 double radius = 0.8721661567687988
             }
             dictionary Perspective = {
-                double3 position = (1.639510990532662, 0.9674438668669005, 1.223125756141099)
-                double3 target = (-20.953983945195336, -21.046914415258136, -8.851243116071075)
+                double3 position = (1.0065773089158818, -0.7697470284806045, 1.3627449862126002)
+                double3 target = (-22.794668216791738, 7.537351481598926, -18.46388521843489)
             }
             dictionary Right = {
                 double3 position = (-0.007098772888521573, -5, 0.4376711307283346)
@@ -187,7 +187,7 @@ def Xform "World"
                 float focusDistance = 0.1
                 float verticalAperture = 20.955
                 token visibility = "invisible"
-                quatd xformOp:orient = (0.3420201433256689, -0.9396926207859085, 0, 0)
+                quatd xformOp:orient = (0.30070579950427306, -0.9537169507482269, 0, 0)
                 double3 xformOp:scale = (1, 1, 1)
                 double3 xformOp:translate = (0.08, 0, 0.08)
                 uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
@@ -202,7 +202,7 @@ def Xform "World"
                 token visibility = "invisible"
                 quatd xformOp:orient = (6.123233995736766e-17, -1, 0, 0)
                 double3 xformOp:scale = (1, 1, 1)
-                double3 xformOp:translate = (-3.725290298461914e-9, 0, 0.08)
+                double3 xformOp:translate = (0, 0, 0.055)
                 uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
             }
 
@@ -216,6 +216,24 @@ def Xform "World"
             {
                 float state:linear:physics:position = 0
                 float state:linear:physics:velocity = 0
+            }
+
+            def SphereLight "SphereLight" (
+                prepend apiSchemas = ["ShapingAPI"]
+            )
+            {
+                float3[] extent = [(-0.5, -0.5, -0.5), (0.5, 0.5, 0.5)]
+                float inputs:intensity = 1000
+                float inputs:radius = 0.5
+                float inputs:shaping:cone:angle = 180
+                float inputs:shaping:cone:softness
+                float inputs:shaping:focus
+                color3f inputs:shaping:focusTint
+                asset inputs:shaping:ies:file
+                quatd xformOp:orient = (-0.6532814887076336, 0.6532814887076335, -0.27059803493731843, 0.2705980349373184)
+                double3 xformOp:scale = (0.05, 0.05, 0.05)
+                double3 xformOp:translate = (0, 0, 0.055)
+                uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
             }
         }
 

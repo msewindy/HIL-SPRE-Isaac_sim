@@ -293,6 +293,7 @@ class GamepadIntervention(gym.ActionWrapper):
         self.left, self.right = False, False
         self.x_button, self.y_button = False, False
         self._y_button_pressed = False  # 用于边缘触发检测
+        self._y_triggered_reset = False  # 本步触发了 Y 键场景重置，供 step() 写入 info["user_reset_scene"]
         
         # Gripper state initialization
         # Mark as uninitialized to sync with env on first action
@@ -315,23 +316,10 @@ class GamepadIntervention(gym.ActionWrapper):
         intervened = False
         
         # 处理场景重置（Y 键）
+        # 仅设置标志，不在此处调用 reset_scene()，避免与后续 env.reset() 中的 reset_scene() 重复导致场景重置两次
         if self.y_button and not self._y_button_pressed:
-            # 检测 Y 键按下（边缘触发，避免重复触发）
             self._y_button_pressed = True
-            try:
-                # 调用环境的场景重置方法（如果存在）
-                if hasattr(self.env, 'reset_scene'):
-                    self.env.reset_scene()
-                elif hasattr(self.env, 'url'):
-                    # 如果环境有 url 属性，直接调用 HTTP 接口
-                    import requests
-                    try:
-                        requests.post(self.env.url + "reset_scene", timeout=1.0)
-                        print("[INFO] Scene reset triggered by gamepad Y button")
-                    except:
-                        pass
-            except Exception as e:
-                print(f"[WARNING] Failed to reset scene: {e}")
+            self._y_triggered_reset = True  # 本步将返回 info["user_reset_scene"]，脚本会调用 env.reset()，其中会执行 reset_scene() 一次
         elif not self.y_button:
             # Y 键释放，重置标志
             self._y_button_pressed = False
@@ -412,6 +400,9 @@ class GamepadIntervention(gym.ActionWrapper):
         new_action, replaced = self.action(action)
         
         obs, rew, done, truncated, info = self.env.step(new_action)
+        if getattr(self, '_y_triggered_reset', False):
+            info["user_reset_scene"] = True
+            self._y_triggered_reset = False
         if replaced:
             info["intervene_action"] = new_action
         info["left"] = self.left

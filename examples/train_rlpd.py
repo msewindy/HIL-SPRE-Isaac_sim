@@ -186,13 +186,15 @@ def actor(agent, data_store, intvn_data_store, env, sampling_rng):
                 already_intervened = False
 
             running_return += reward
+            # Y 键重置视为 episode 结束（失败轨迹），与超时/成功一致
+            effective_done = done or truncated or info.get("user_reset_scene", False)
             transition = dict(
                 observations=obs,
                 actions=actions,
                 next_observations=next_obs,
                 rewards=reward,
-                masks=1.0 - done,
-                dones=done,
+                masks=1.0 - effective_done,
+                dones=effective_done,
             )
             if 'grasp_penalty' in info:
                 transition['grasp_penalty']= info['grasp_penalty']
@@ -203,7 +205,7 @@ def actor(agent, data_store, intvn_data_store, env, sampling_rng):
                 demo_transitions.append(copy.deepcopy(transition))
 
             obs = next_obs
-            if done or truncated:
+            if effective_done:
                 info["episode"]["intervention_count"] = intervention_count
                 info["episode"]["intervention_steps"] = intervention_steps
                 stats = {"environment": info}  # send stats to the learner to log

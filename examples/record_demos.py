@@ -12,6 +12,7 @@ from experiments.mappings import CONFIG_MAPPING
 FLAGS = flags.FLAGS
 flags.DEFINE_string("exp_name", None, "Name of experiment corresponding to folder.")
 flags.DEFINE_integer("successes_needed", 20, "Number of successful demos to collect.")
+flags.DEFINE_float("success_sleep_sec", 2.0, "Seconds to wait after a success before reset (0 to disable). Was 10s, reduce to avoid long freeze.")
 flags.DEFINE_boolean("fake_env", False, "Use Isaac Sim simulation environment.")
 
 def main(_):
@@ -33,6 +34,13 @@ def main(_):
         actions = np.zeros(env.action_space.sample().shape) 
         # print(f"[DEBUG] Pre-Step Action (Input to step): {np.round(actions, 4)}")
         next_obs, rew, done, truncated, info = env.step(actions)
+        # 手柄 Y 键重置：丢弃当前轨迹（不写入 transitions），重置环境后继续采集
+        if info.get("user_reset_scene"):
+            trajectory = []
+            returns = 0
+            print(f"[{datetime.datetime.now().strftime('%H:%M:%S.%f')[:-3]}] [DemoRecorder] [Y-RESET] User reset scene. Discarding current trajectory and resetting.")
+            obs, info = env.reset()
+            continue
         returns += rew
         if "intervene_action" in info:
             actions = info["intervene_action"]
@@ -60,9 +68,9 @@ def main(_):
                 success_count += 1
                 pbar.update(1)
                 
-                # [USER-REQUEST] Wait 10s before reset to inspect final state
-                print(f"[INFO] Success! Waiting 10s before reset to inspect results...")
-                time.sleep(10)
+                if FLAGS.success_sleep_sec > 0:
+                    print(f"[INFO] Success! Waiting {FLAGS.success_sleep_sec}s before reset (set --success_sleep_sec=0 to skip).")
+                    time.sleep(FLAGS.success_sleep_sec)
             else:
                 print(f"[{datetime.datetime.now().strftime('%H:%M:%S.%f')[:-3]}] [DemoRecorder] [FAIL] Episode failed or timed out. Discarding trajectory.")
 
