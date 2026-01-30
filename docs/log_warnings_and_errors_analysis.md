@@ -72,7 +72,11 @@ Python 中 `_optimize_physics_precision()` 仍对可编辑 prim 做显式 offset
 - 若**任一手指为 instance proxy**（Franka 以 instance 加载时常见）：**不添加** FilteredPairs，仅创建 FixedJoint，夹爪外观保持，抓取时可能有轻微抖动。
 - 若左右指均**非** instance proxy：在齿轮 prim 上添加 FilteredPairs、左右指为 target，由代码完成碰撞过滤；释放时从齿轮的 FilteredPairsRel 移除左右指。
 
-**日志：** 若曾对手指做过 FilteredPairs 或引擎在 pair 两端查找属性，可能出现 `[Warning] attribute physics:filteredPairs not found for path /World/franka/panda_leftfinger`，可忽略；当前实现已不在手指上添加 FilteredPairs。
+**日志：**
+- 若曾对手指做过 FilteredPairs 或引擎在 pair 两端查找属性，可能出现 `[Warning] attribute physics:filteredPairs not found for path /World/franka/panda_leftfinger`，可忽略；当前实现已不在手指上添加 FilteredPairs。
+- **齿轮路径**：`[Warning] [omni.fabric.plugin] attribute physics:filteredPairs not found for path /World/factory_gear_medium/factory_gear_medium`  
+  **原因**：抓取时我们在**同一帧**内先执行 `world.step()`，再执行 `_update_grasping_logic_v2()` 并在齿轮 prim 上 `Apply(FilteredPairsAPI)`。PhysX 5 的 Fabric 在**本帧物理步进或同步**时已按该路径查询过 `physics:filteredPairs`，彼时属性尚未添加，故报 “not found”。下一帧属性已存在，过滤通常已生效。  
+  **建议**：可忽略；若抓取后手–齿轮碰撞仍明显抖动，再考虑将碰撞过滤逻辑提前到 `world.step()` 之前一帧或对齿轮根 prim 也做 FilteredPairs（视场景层级而定）。
 
 ---
 

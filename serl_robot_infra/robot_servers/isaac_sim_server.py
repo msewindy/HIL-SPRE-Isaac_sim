@@ -2105,14 +2105,10 @@ class IsaacSimServer:
                 # If grasped, Block Closing commands (Target < Current), but allow Opening commands (Target > Current)
                 if self.grasp_joint is not None:
                      current_pos = gripper_joint.get_joint_position()
-                     # If target is significantly smaller than current (Closing/继续夹紧)
-                     # Allow small noise/drift (1mm tolerance)
-                     if target_position < (current_pos - 0.001):
-                         # Block closing command when grasped
-                         # self._log(f"[GRASP] Blocking Close Command: Target {target_position:.4f} < Current {current_pos:.4f}")
+                     # Block any further closing when grasped (no tolerance: target < current => block)
+                     if target_position < current_pos:
                          return
-                     # If target is larger than current (Opening/张开), allow it to proceed
-                     # This allows releasing the grasped object
+                     # If target >= current (Opening or hold), allow it to proceed (releasing or no change)
                 
                 # 设置夹爪关节目标位置
                 gripper_joint.set_joint_position_target(target_position)
@@ -2120,6 +2116,9 @@ class IsaacSimServer:
             except AttributeError:
                 # 如果 get_joints() 方法不存在，尝试其他方法
                 try:
+                    # [GRASP FIX] Fallback 分支也要禁止“已抓取后继续夹紧”
+                    if self.grasp_joint is not None and gripper_pos < 0.5:
+                        return
                     # 方法2：使用高级 API set_joint_positions
                     if hasattr(self.franka.gripper, 'set_joint_positions'):
                         target_position = gripper_pos * 0.04
