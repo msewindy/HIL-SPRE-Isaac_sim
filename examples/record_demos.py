@@ -6,6 +6,8 @@ import pickle as pkl
 import datetime
 from absl import app, flags
 import time
+import glob
+import shutil
 
 from experiments.mappings import CONFIG_MAPPING
 
@@ -23,68 +25,140 @@ def main(_):
     obs, info = env.reset()
     # print(f"[VERIFY] Post-Reset State: {np.round(obs['state'][0], 4)}")
     print("Reset done")
-    transitions = []
-    success_count = 0
+    
+    # 初始化变量
     success_needed = FLAGS.successes_needed
-    pbar = tqdm(total=success_needed)
+    
+    # 创建或查找临时目录存储单个轨迹文件
+    if not os.path.exists("./demo_data"):
+        os.makedirs("./demo_data")
+    
+    # 查找是否已有未完成的临时文件夹（匹配实验名称和所需数量）
+    temp_dir_pattern = f"./demo_data/{FLAGS.exp_name}_{success_needed}_demos_*_temp"
+    existing_temp_dirs = glob.glob(temp_dir_pattern)
+    
+    if existing_temp_dirs:
+        # 找到已有的临时文件夹，使用最新的（按修改时间排序）
+        existing_temp_dirs.sort(key=os.path.getmtime, reverse=True)
+        temp_dir = existing_temp_dirs[0]
+        # 从文件夹名中提取 UUID
+        uuid = os.path.basename(temp_dir).replace(f"{FLAGS.exp_name}_{success_needed}_demos_", "").replace("_temp", "")
+        
+        # 统计已有的轨迹文件数量
+        existing_trajectory_files = sorted(glob.glob(os.path.join(temp_dir, "trajectory_*.pkl")))
+        success_count = len(existing_trajectory_files)
+        
+        print(f"[INFO] Found existing temporary directory: {temp_dir}")
+        print(f"[INFO] Resuming collection: {success_count}/{success_needed} trajectories already collected")
+        print(f"[INFO] Will continue collecting from trajectory #{success_count}")
+    else:
+        # 创建新的临时文件夹
+        uuid = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        temp_dir = f"./demo_data/{FLAGS.exp_name}_{success_needed}_demos_{uuid}_temp"
+        os.makedirs(temp_dir)
+        success_count = 0
+        print(f"[INFO] Created new temporary directory: {temp_dir}")
+        print(f"[INFO] Starting fresh collection: 0/{success_needed} trajectories")
+    
+    pbar = tqdm(total=success_needed, initial=success_count)
     trajectory = []
     returns = 0
     
-    while success_count < success_needed:
-        actions = np.zeros(env.action_space.sample().shape) 
-        # print(f"[DEBUG] Pre-Step Action (Input to step): {np.round(actions, 4)}")
-        next_obs, rew, done, truncated, info = env.step(actions)
-        # 手柄 Y 键重置：丢弃当前轨迹（不写入 transitions），重置环境后继续采集
-        if info.get("user_reset_scene"):
-            trajectory = []
-            returns = 0
-            print(f"[{datetime.datetime.now().strftime('%H:%M:%S.%f')[:-3]}] [DemoRecorder] [Y-RESET] User reset scene. Discarding current trajectory and resetting.")
-            obs, info = env.reset()
-            continue
-        returns += rew
-        if "intervene_action" in info:
-            actions = info["intervene_action"]
-            # print(f"[DEBUG] Client Gamepad Action: {actions}")
-        transition = copy.deepcopy(
-            dict(
-                observations=obs,
-                actions=actions,
-                next_observations=next_obs,
-                rewards=rew,
-                masks=1.0 - done,
-                dones=done,
-                infos=info,
+    try:
+        while success_count < success_needed:
+            actions = np.zeros(env.action_space.sample().shape) 
+            # print(f"[DEBUG] Pre-Step Action (Input to step): {np.round(actions, 4)}")
+            next_obs, rew, done, truncated, info = env.step(actions)
+            # 手柄 Y 键重置：丢弃当前轨迹（不写入 transitions），重置环境后继续采集
+            if info.get("user_reset_scene"):
+                trajectory = []
+                returns = 0
+                print(f"[{datetime.datetime.now().strftime('%H:%M:%S.%f')[:-3]}] [DemoRecorder] [Y-RESET] User reset scene. Discarding current trajectory and resetting.")
+                obs, info = env.reset()
+                continue
+            returns += rew
+            if "intervene_action" in info:
+                actions = info["intervene_action"]
+                # print(f"[DEBUG] Client Gamepad Action: {actions}")
+            transition = copy.deepcopy(
+                dict(
+                    observations=obs,
+                    actions=actions,
+                    next_observations=next_obs,
+                    rewards=rew,
+                    masks=1.0 - done,
+                    dones=done,
+                    infos=info,
+                )
             )
-        )
-        trajectory.append(transition)
-        
-        pbar.set_description(f"Return: {returns}")
-
-        obs = next_obs
-        if done:
-            if info["succeed"]:
-                for transition in trajectory:
-                    transitions.append(copy.deepcopy(transition))
-                success_count += 1
-                pbar.update(1)
-                
-                if FLAGS.success_sleep_sec > 0:
-                    print(f"[INFO] Success! Waiting {FLAGS.success_sleep_sec}s before reset (set --success_sleep_sec=0 to skip).")
-                    time.sleep(FLAGS.success_sleep_sec)
-            else:
-                print(f"[{datetime.datetime.now().strftime('%H:%M:%S.%f')[:-3]}] [DemoRecorder] [FAIL] Episode failed or timed out. Discarding trajectory.")
-
-            trajectory = []
-            returns = 0
-            obs, info = env.reset() 
+            trajectory.append(transition)
             
-    if not os.path.exists("./demo_data"):
-        os.makedirs("./demo_data")
-    uuid = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    file_name = f"./demo_data/{FLAGS.exp_name}_{success_needed}_demos_{uuid}.pkl"
-    with open(file_name, "wb") as f:
-        pkl.dump(transitions, f)
-        print(f"saved {success_needed} demos to {file_name}")
+            pbar.set_description(f"Return: {returns}")
+
+            obs = next_obs
+            if done:
+                if info["succeed"]:
+                    # 立即保存当前成功的轨迹到单独文件
+                    trajectory_copy = copy.deepcopy(trajectory)
+                    single_traj_file = os.path.join(temp_dir, f"trajectory_{success_count:04d}.pkl")
+                    with open(single_traj_file, "wb") as f:
+                        pkl.dump(trajectory_copy, f)
+                    print(f"[{datetime.datetime.now().strftime('%H:%M:%S.%f')[:-3]}] [DemoRecorder] [SUCCESS #{success_count+1}/{success_needed}] Saved trajectory to {single_traj_file}")
+                    
+                    success_count += 1
+                    pbar.update(1)
+                    
+                    if FLAGS.success_sleep_sec > 0:
+                        print(f"[INFO] Success! Waiting {FLAGS.success_sleep_sec}s before reset (set --success_sleep_sec=0 to skip).")
+                        time.sleep(FLAGS.success_sleep_sec)
+                else:
+                    print(f"[{datetime.datetime.now().strftime('%H:%M:%S.%f')[:-3]}] [DemoRecorder] [FAIL] Episode failed or timed out. Discarding trajectory.")
+
+                trajectory = []
+                returns = 0
+                obs, info = env.reset()
+        
+        # 合并所有轨迹文件
+        print(f"\n[INFO] Collecting all trajectories from {temp_dir}...")
+        all_transitions = []
+        trajectory_files = sorted(glob.glob(os.path.join(temp_dir, "trajectory_*.pkl")))
+        
+        if len(trajectory_files) != success_needed:
+            print(f"[WARNING] Expected {success_needed} trajectory files, but found {len(trajectory_files)}")
+        
+        for traj_file in trajectory_files:
+            try:
+                with open(traj_file, "rb") as f:
+                    trajectory = pkl.load(f)
+                    all_transitions.extend(trajectory)
+            except Exception as e:
+                print(f"[ERROR] Failed to load {traj_file}: {e}")
+                continue
+        
+        # 保存合并后的文件
+        final_file_name = f"./demo_data/{FLAGS.exp_name}_{success_needed}_demos_{uuid}.pkl"
+        with open(final_file_name, "wb") as f:
+            pkl.dump(all_transitions, f)
+        print(f"[INFO] Merged {len(trajectory_files)} trajectories ({len(all_transitions)} transitions) saved to {final_file_name}")
+        
+        # 删除临时目录
+        try:
+            shutil.rmtree(temp_dir)
+            print(f"[INFO] Temporary directory {temp_dir} removed")
+        except Exception as e:
+            print(f"[WARNING] Failed to remove temporary directory {temp_dir}: {e}")
+            print(f"[INFO] You can manually remove it later")
+            
+    except KeyboardInterrupt:
+        print(f"\n[WARNING] Interrupted by user. Collected {success_count}/{success_needed} trajectories.")
+        print(f"[INFO] Individual trajectory files are saved in: {temp_dir}")
+        print(f"[INFO] You can manually merge them later or resume collection.")
+        raise
+    except Exception as e:
+        print(f"\n[ERROR] Exception occurred: {e}")
+        print(f"[INFO] Individual trajectory files are saved in: {temp_dir}")
+        print(f"[INFO] You can manually merge them later.")
+        raise
 
 if __name__ == "__main__":
     app.run(main)
