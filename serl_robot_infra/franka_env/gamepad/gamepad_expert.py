@@ -98,7 +98,7 @@ class GamepadExpert:
         self.manager = multiprocessing.Manager()
         self.latest_data = self.manager.dict()
         self.latest_data["action"] = [0.0] * 6  # [x, y, z, roll, pitch, yaw]
-        self.latest_data["buttons"] = [0, 0, 0, 0]  # [A, B, X, Y] for gripper control
+        self.latest_data["buttons"] = [0, 0, 0, 0, 0]  # [A, B, X, Y, Back] for gripper control and precision mode
         
         # Start a process to continuously read the gamepad state
         self.process = multiprocessing.Process(target=self._read_gamepad)
@@ -228,7 +228,12 @@ class GamepadExpert:
                     action[3] = 0.0
                 
                 # Read buttons for gripper control
-                buttons = [0, 0, 0, 0]
+                # [A, B, X, Y, Back]
+                # NOTE: Back button index may vary by controller model:
+                #   - Xbox 360/One: typically button 6
+                #   - Some controllers: button 8 or other
+                #   Run test_gamepad_buttons.py to confirm your controller's Back button index
+                buttons = [0, 0, 0, 0, 0]
                 if num_buttons > 0:
                     buttons[0] = joystick.get_button(0)  # A button - close gripper
                 if num_buttons > 1:
@@ -237,12 +242,17 @@ class GamepadExpert:
                     buttons[2] = joystick.get_button(2)  # X button (optional)
                 if num_buttons > 3:
                     buttons[3] = joystick.get_button(3)  # Y button (optional)
+                # Back button - precision mode toggle
+                # Default: button 6 (Xbox 360/One standard)
+                # If your controller uses a different index, update this line after running test_gamepad_buttons.py
+                if num_buttons > 6:
+                    buttons[4] = joystick.get_button(6)  # Back button - precision mode toggle
                 
             except Exception as e:
                 # If gamepad disconnects, set all actions to zero
                 print(f"Warning: Error reading gamepad: {e}")
                 action = [0.0] * 6
-                buttons = [0, 0, 0, 0]
+                buttons = [0, 0, 0, 0, 0]
             
             # Debug: Print raw values occasionally
             if hasattr(self, '_debug_counter'):

@@ -337,11 +337,11 @@ class IsaacSimServer:
 
         # 定义增益配置
         # Root joints (1-4) need high stiffness
-        # Wrist joints (5-7) need lower stiffness but stable damping
+        # Wrist joints (5-7) need higher stiffness to reduce end-effector vibration
         gains = {
             "default": {"stiffness": 400.0, "damping": 40.0},
             "root":    {"stiffness": 600.0, "damping": 60.0}, # Joints 1-4
-            "wrist":   {"stiffness": 200.0, "damping": 20.0}, # Joints 5-7
+            "wrist":   {"stiffness": 400.0, "damping": 40.0}, # Joints 5-7 (Increased from 200/20 to reduce vibration)
             "finger":  {"stiffness": 1000.0, "damping": 100.0}, # Gripper
         }
         
@@ -2003,14 +2003,17 @@ class IsaacSimServer:
                 target_position = gripper_pos * 0.04
                 
                 # [GRASP FIX] Dynamic Constraint
-                # If grasped, Block Closing commands (Target < Current)
+                # If grasped, Block Closing commands (Target < Current), but allow Opening commands (Target > Current)
                 if self.grasp_joint is not None:
                      current_pos = gripper_joint.get_joint_position()
-                     # If target is significantly smaller than current (Closing)
+                     # If target is significantly smaller than current (Closing/继续夹紧)
                      # Allow small noise/drift (1mm tolerance)
                      if target_position < (current_pos - 0.001):
+                         # Block closing command when grasped
                          # self._log(f"[GRASP] Blocking Close Command: Target {target_position:.4f} < Current {current_pos:.4f}")
                          return
+                     # If target is larger than current (Opening/张开), allow it to proceed
+                     # This allows releasing the grasped object
                 
                 # 设置夹爪关节目标位置
                 gripper_joint.set_joint_position_target(target_position)

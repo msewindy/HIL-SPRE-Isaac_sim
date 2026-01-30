@@ -292,8 +292,15 @@ class GamepadIntervention(gym.ActionWrapper):
         self.expert = GamepadExpert(deadzone=deadzone, sensitivity=sensitivity, joystick_id=joystick_id)
         self.left, self.right = False, False
         self.x_button, self.y_button = False, False
+        self.back_button = False
         self._y_button_pressed = False  # 用于边缘触发检测
         self._y_triggered_reset = False  # 本步触发了 Y 键场景重置，供 step() 写入 info["user_reset_scene"]
+        
+        # Precision mode (slow speed) toggle
+        self.precision_mode = False
+        self.normal_sensitivity = sensitivity
+        self.precision_sensitivity = sensitivity * 0.3  # 30% of normal speed for precision mode
+        self._back_button_pressed = False  # 用于边缘触发检测
         
         # Gripper state initialization
         # Mark as uninitialized to sync with env on first action
@@ -313,7 +320,20 @@ class GamepadIntervention(gym.ActionWrapper):
         self.left, self.right = buttons[0], buttons[1]  # A button (close), B button (open)
         self.x_button = buttons[2] if len(buttons) > 2 else 0  # X button
         self.y_button = buttons[3] if len(buttons) > 3 else 0  # Y button - 场景重置
+        self.back_button = buttons[4] if len(buttons) > 4 else 0  # Back button - 精准模式切换
         intervened = False
+        
+        # Handle precision mode toggle (Back button edge trigger)
+        if self.back_button and not self._back_button_pressed:
+            self._back_button_pressed = True
+            self.precision_mode = not self.precision_mode
+            # Update expert sensitivity dynamically
+            current_sensitivity = self.precision_sensitivity if self.precision_mode else self.normal_sensitivity
+            self.expert.sensitivity = current_sensitivity
+            mode_str = "精准模式" if self.precision_mode else "普通模式"
+            print(f"[INFO] Gamepad: {mode_str} 已激活 (Sensitivity: {current_sensitivity:.2f})")
+        elif not self.back_button:
+            self._back_button_pressed = False
         
         # 处理场景重置（Y 键）
         # 仅设置标志，不在此处调用 reset_scene()，避免与后续 env.reset() 中的 reset_scene() 重复导致场景重置两次
