@@ -7,8 +7,8 @@
                 double radius = 0.8721661567687988
             }
             dictionary Perspective = {
-                double3 position = (1.0065773089158818, -0.7697470284806045, 1.3627449862126002)
-                double3 target = (-22.794668216791738, 7.537351481598926, -18.46388521843489)
+                double3 position = (3.4673577732216954, -0.2163660813206295, 2.4021649587930827)
+                double3 target = (-26.438909138718586, 1.688709479928653, -15.041117869709513)
             }
             dictionary Right = {
                 double3 position = (-0.007098772888521573, -5, 0.4376711307283346)
@@ -18,7 +18,7 @@
                 double3 position = (0.027687061484490474, -0.5715400549298372, 5)
                 double radius = 0.3917116403579712
             }
-            string boundCamera = "/OmniverseKit_Persp"
+            string boundCamera = "/World/franka/panda_hand/wrist_1"
         }
         dictionary omni_layer = {
             string authoring_layer = "./HIL_franka_gear.usda"
@@ -182,9 +182,13 @@ def Xform "World"
 
             def Camera "wrist_1"
             {
+                token cameraProjectionType = "fisheyePolynomial" (
+                    allowedTokens = ["pinhole", "pinholeOpenCV", "fisheyePolynomial", "fisheyeSpherical", "fisheyeKannalaBrandtK3", "fisheyeOpenCV", "fisheyeRadTanThinPrism", "omniDirectionalStereo", "generalizedProjection"]
+                )
                 float2 clippingRange = (0.01, 10000000)
                 float focalLength = 18.147562
                 float focusDistance = 0.1
+                bool isLeftEye = 0
                 float verticalAperture = 20.955
                 token visibility = "invisible"
                 quatd xformOp:orient = (0.30070579950427306, -0.9537169507482269, 0, 0)
@@ -515,7 +519,7 @@ def "Render" (
                 no_delete = true
             )
             {
-                rel camera = </OmniverseKit_Persp>
+                rel camera = </World/franka/panda_hand/wrist_1>
                 token omni:rtx:background:source:texture:textureMode = "repeatMirrored"
                 token omni:rtx:background:source:type = "domeLight"
                 bool omni:rtx:dlss:frameGeneration = 0
