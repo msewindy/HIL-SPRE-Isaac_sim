@@ -287,7 +287,11 @@ class IsaacSimServer:
         
         # [GRASP] Magnetic Grasping State (Initialized)
         self.grasp_joint = None
-        self.grasp_obj_path = "/World/factory_gear_medium" 
+        self.grasp_obj_path = "/World/factory_gear_medium"
+        # 手-齿轮碰撞过滤：抓取时在齿轮 prim 上做 FilteredPairs（target=左右指），仅当左右指非 instance proxy 时添加；释放时从齿轮移除
+        self._gripper_left_finger_path = f"{self.robot_prim_path}/panda_leftfinger"
+        self._gripper_right_finger_path = f"{self.robot_prim_path}/panda_rightfinger"
+        self._grasp_filter_gear_path = None 
         
         # [GRASP] Parameters (Refined for 4cm Gear)
         self.grasp_threshold_deg = 4.5     # Alignment < 4.5 deg (Relaxed)
@@ -414,33 +418,78 @@ class IsaacSimServer:
             if prim.IsA(UsdPhysics.Scene):
                 try:
                     physx_scene_api = PhysxSchema.PhysxSceneAPI.Apply(prim)
-                    # 默认是 4，提高到 8 或 16 可以显著增加接触刚度
-                    physx_scene_api.CreateSolverPositionIterationsAttr().Set(8)
-                    physx_scene_api.CreateSolverVelocityIterationsAttr().Set(1)
+                    # Isaac Sim 5.x 使用 Max/MinPositionIterationCount，旧版为 CreateSolverPositionIterationsAttr
+                    if hasattr(physx_scene_api, "CreateMaxPositionIterationCountAttr"):
+                        physx_scene_api.CreateMaxPositionIterationCountAttr().Set(16)
+                        physx_scene_api.CreateMinPositionIterationCountAttr().Set(16)
+                    elif hasattr(physx_scene_api, "CreateSolverPositionIterationsAttr"):
+                        physx_scene_api.CreateSolverPositionIterationsAttr().Set(16)
+                    if hasattr(physx_scene_api, "CreateSolverVelocityIterationsAttr"):
+                        physx_scene_api.CreateSolverVelocityIterationsAttr().Set(1)
                     print(f"[INFO] Enhanced physics scene solver iterations for {prim.GetPath()}")
                 except Exception as e:
-                     print(f"[WARN] Failed to set solver iterations: {e}")
+                    print(f"[WARN] Failed to set solver iterations: {e}")
 
             # 检查是否有 CollisionAPI (即是否是碰撞体)
-            if prim.HasAPI(UsdPhysics.CollisionAPI):
-                # 获取或应用 PhysxCollisionAPI
-                physx_collision_api = PhysxSchema.PhysxCollisionAPI.Apply(prim)
-                
-                # [FIX] Set RestOffset FIRST to 0.0, then ContactOffset to 0.001
-                # Because standard rule is ContactOffset > RestOffset.
-                # If we set ContactOffset first (0.001) while RestOffset is default (e.g. 0.02),
-                # it violates 0.001 > 0.02, causing Error.
-                
-                # 设置 Rest Offset (静止间距) -> 0mm
-                physx_collision_api.CreateRestOffsetAttr().Set(0.0)
-                
-                # 设置 Contact Offset (接触阈值) -> 0.1mm (从 1mm 降低)
-                # 消除 "力场盾" 效应，允许抓取时紧密接触
-                physx_collision_api.CreateContactOffsetAttr().Set(0.0001)
-                
-                # print(f"[DEBUG] Optimized collision for: {prim.GetPath()}")
+            # Instance proxy 不允许编辑，否则会抛 "authoring to an instance proxy is not allowed"
+            if prim.HasAPI(UsdPhysics.CollisionAPI) and not prim.IsInstanceProxy():
+                try:
+                    physx_collision_api = PhysxSchema.PhysxCollisionAPI.Apply(prim)
+                    # [FIX] Set RestOffset FIRST to 0.0, then ContactOffset to 0.001
+                    physx_collision_api.CreateRestOffsetAttr().Set(0.0)
+                    physx_collision_api.CreateContactOffsetAttr().Set(0.001)
+                except Exception as e:
+                    print(f"[WARN] Skip collision offset for {prim.GetPath()}: {e}")
         
-        print("[INFO] precision assembly optimization completed: ContactOffset=1mm, RestOffset=0mm")
+        # [GRIPPER] 显式对左右指碰撞体设 offset；若为 instance proxy 则跳过（Franka 常以 instance 加载，不可直接编辑子 prim）
+        for rel_path in [
+            f"{self.robot_prim_path}/panda_leftfinger/collisions/mesh_0",
+            f"{self.robot_prim_path}/panda_rightfinger/collisions/mesh_0",
+        ]:
+            prim = stage.GetPrimAtPath(rel_path)
+            if not prim.IsValid() or not prim.HasAPI(UsdPhysics.CollisionAPI):
+                continue
+            if prim.IsInstanceProxy():
+                print(f"[INFO] Gripper collision {rel_path} is instance proxy, skip explicit offset (inherits from prototype).")
+                continue
+            try:
+                physx_collision_api = PhysxSchema.PhysxCollisionAPI.Apply(prim)
+                physx_collision_api.CreateRestOffsetAttr().Set(0.0)
+                physx_collision_api.CreateContactOffsetAttr().Set(0.001)
+                print(f"[INFO] Explicit offset applied to gripper collision: {rel_path}")
+            except Exception as e:
+                print(f"[WARN] Skip explicit gripper offset for {rel_path}: {e}")
+        
+        # [SCENE] 显式对常报错的齿轮/地面碰撞体设 offset（若在 reference 中，Traverse 可能未写入）
+        def _set_collision_offset_once(p, path_label):
+            if not p.IsValid() or not p.HasAPI(UsdPhysics.CollisionAPI) or p.IsInstanceProxy():
+                return False
+            try:
+                api = PhysxSchema.PhysxCollisionAPI.Apply(p)
+                api.CreateRestOffsetAttr().Set(0.0)
+                api.CreateContactOffsetAttr().Set(0.001)
+                print(f"[INFO] Explicit offset applied to scene collision: {path_label}")
+                return True
+            except Exception as e:
+                print(f"[WARN] Skip scene collision offset for {path_label}: {e}")
+                return False
+
+        for coll_path in [
+            "/World/factory_gear_medium/factory_gear_medium/collisions",
+            "/World/factory_gear_base/factory_gear_base_loose/collisions",
+            "/World/factory_gear_base/factory_gear_base_large/factory_gear_large/collisions",
+            "/World/GroundPlane/CollisionPlane",
+        ]:
+            prim = stage.GetPrimAtPath(coll_path)
+            if not prim.IsValid():
+                continue
+            if _set_collision_offset_once(prim, coll_path):
+                continue
+            # CollisionAPI 可能在子 prim 上（如 collisions/mesh_0）
+            for child in prim.GetChildren():
+                _set_collision_offset_once(child, f"{coll_path}/{child.GetName()}")
+        
+        print("[INFO] precision assembly optimization completed: ContactOffset=1mm, RestOffset=0mm, SolverPositionIterations=16")
         
         # 标记运行状态
         self.running = True
@@ -1114,6 +1163,53 @@ class IsaacSimServer:
         pose_display = np.concatenate([pose_xyzw[:3], quat_wxyz])
         self._log(f"[INFO] Warmup completed. Robot Pose: {np.round(pose_display, 4)} [WXYZ]")
 
+    def _add_hand_gear_collision_filter(self, gear_prim_path):
+        """抓取时：在齿轮 prim 上做「手-齿轮」刚体对碰撞过滤（FilteredPairsAPI，target=左右指），避免 FixedJoint+接触冲突抖动。
+        仅当左右指均非 instance proxy 时添加；Franka 以 instance 加载时手指多为 proxy，此时跳过以保持夹爪 visuals。"""
+        from pxr import UsdPhysics
+        stage = self.get_current_stage()
+        finger_paths = [self._gripper_left_finger_path, self._gripper_right_finger_path]
+        for fp in finger_paths:
+            p = stage.GetPrimAtPath(fp)
+            if p.IsValid() and p.IsInstanceProxy():
+                self._log(f"[GRASP] Skip collision filter (finger {fp} is instance proxy, filter would hide gripper).")
+                return
+        gear_prim = stage.GetPrimAtPath(gear_prim_path)
+        if not gear_prim.IsValid() or gear_prim.IsInstanceProxy():
+            return
+        try:
+            filter_api = UsdPhysics.FilteredPairsAPI.Apply(gear_prim)
+            rel = filter_api.CreateFilteredPairsRel()
+            for fp in finger_paths:
+                rel.AddTarget(fp)
+            self._log(f"[GRASP] Collision filter added: gear <-> fingers (FilteredPairs on gear).")
+        except Exception as e:
+            self._log(f"[WARNING] Failed to add hand-gear collision filter: {e}")
+
+    def _remove_hand_gear_collision_filter(self, gear_prim_path=None):
+        """释放时：从齿轮 prim 的 FilteredPairsRel 中移除左右指，恢复手-齿轮碰撞。"""
+        from pxr import UsdPhysics, Sdf
+        gear_path = gear_prim_path if gear_prim_path is not None else getattr(self, "_grasp_filter_gear_path", None)
+        if gear_path is None:
+            gear_path = self.grasp_obj_path
+        gear_path = Sdf.Path(str(gear_path)) if not isinstance(gear_path, Sdf.Path) else gear_path
+        finger_paths = [Sdf.Path(self._gripper_left_finger_path), Sdf.Path(self._gripper_right_finger_path)]
+        try:
+            stage = self.get_current_stage()
+            gear_prim = stage.GetPrimAtPath(str(gear_path))
+            if not gear_prim.IsValid() or not gear_prim.HasAPI(UsdPhysics.FilteredPairsAPI):
+                self._grasp_filter_gear_path = None
+                return
+            rel = UsdPhysics.FilteredPairsAPI(gear_prim).GetFilteredPairsRel()
+            targets = list(rel.GetTargets())
+            new_targets = [t for t in targets if t not in finger_paths]
+            if new_targets != targets:
+                rel.SetTargets(new_targets)
+                self._log(f"[GRASP] Collision filter removed: gear <-> fingers.")
+        except Exception as e:
+            self._log(f"[WARNING] Failed to remove hand-gear collision filter: {e}")
+        self._grasp_filter_gear_path = None
+
     def _update_grasping_logic(self):
         """
         Check for Magnetic Grasping conditions and create/destroy FixedJoint.
@@ -1175,6 +1271,7 @@ class IsaacSimServer:
             # Use buffer 0.1 to avoid noise
             if self.last_gripper_cmd > (current_width_normalized + 0.1):
                 print(f"[GRASP] Release detected! Cmd={self.last_gripper_cmd:.2f} > Curr={current_width_normalized:.2f}")
+                self._remove_hand_gear_collision_filter()
                 if self.grasp_joint.GetPrim().IsValid():
                     stage.RemovePrim(self.grasp_joint.GetPrim().GetPath())
                 self.grasp_joint = None
@@ -1305,10 +1402,10 @@ class IsaacSimServer:
             im = rot1.GetImaginary()
             joint.CreateLocalRot1Attr().Set(Gf.Quatf(rot1.GetReal(), im[0], im[1], im[2]))
             
-            # [CRITICAL] Disable collision between Hand and Gear
             joint.CreateExcludeFromArticulationAttr().Set(True)
-            
-            print(f"[GRASP] Joint Created Successfully! (Collision Disabled)")
+            self._add_hand_gear_collision_filter(gear_prim.GetPath())
+            self._grasp_filter_gear_path = gear_prim.GetPath()
+            print(f"[GRASP] Joint created (FixedJoint hand-gear; collision filter on gear only when fingers not instance proxy).")
 
         except Exception as e:
             print(f"[GRASP ERROR] Failed to create joint: {e}")
@@ -1384,6 +1481,7 @@ class IsaacSimServer:
                 
                 if width_m > release_width:
                     print(f"[GRASP] Release detected! Width={width_m:.4f} > {release_width:.4f}")
+                    self._remove_hand_gear_collision_filter()
                     if self.grasp_joint.GetPrim().IsValid():
                         stage.RemovePrim(self.grasp_joint.GetPrim().GetPath())
                     self.grasp_joint = None
@@ -1469,8 +1567,9 @@ class IsaacSimServer:
                 im = rot1.GetImaginary()
                 joint.CreateLocalRot1Attr().Set(Gf.Quatf(rot1.GetReal(), im[0], im[1], im[2]))
                 joint.CreateExcludeFromArticulationAttr().Set(True)
-                
-                print(f"[GRASP] Joint Created Successfully! (Collision Disabled)")
+                self._add_hand_gear_collision_filter(gear_prim.GetPath())
+                self._grasp_filter_gear_path = gear_prim.GetPath()
+                print(f"[GRASP] Joint created (FixedJoint hand-gear; collision filter on gear only when fingers not instance proxy).")
                 self.grasp_joint = joint
 
             except Exception as e:
@@ -2060,6 +2159,7 @@ class IsaacSimServer:
         try:
             # ---------- 1. 先解绑齿轮与机械臂（若存在），避免复位时机械臂把齿轮甩飞 ----------
             if self.grasp_joint is not None:
+                self._remove_hand_gear_collision_filter()
                 stage = self.get_current_stage()
                 if self.grasp_joint.GetPrim().IsValid():
                     stage.RemovePrim(self.grasp_joint.GetPrim().GetPath())

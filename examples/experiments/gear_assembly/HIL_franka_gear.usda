@@ -8,7 +8,7 @@
             }
             dictionary Perspective = {
                 double3 position = (3.4673577732216954, -0.2163660813206295, 2.4021649587930827)
-                double3 target = (-26.438909138718586, 1.688709479928653, -15.041117869709513)
+                double3 target = (-26.438909138718586, 1.6887094799286544, -15.041117869709513)
             }
             dictionary Right = {
                 double3 position = (-0.007098772888521573, -5, 0.4376711307283346)
@@ -18,7 +18,7 @@
                 double3 position = (0.027687061484490474, -0.5715400549298372, 5)
                 double radius = 0.3917116403579712
             }
-            string boundCamera = "/World/franka/panda_hand/wrist_1"
+            string boundCamera = "/OmniverseKit_Persp"
         }
         dictionary omni_layer = {
             string authoring_layer = "./HIL_franka_gear.usda"
@@ -79,6 +79,14 @@ def Xform "World"
             double3 xformOp:translate = (0, 0, 0)
             uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
 
+            over "collisions" (
+                prepend apiSchemas = ["PhysxCollisionAPI"]
+            )
+            {
+                double physx:contactOffset = 0.001
+                double physx:restOffset = 0
+            }
+
             over "visuals"
             {
                 normal3f[] normals = []
@@ -100,6 +108,14 @@ def Xform "World"
         {
             float physics:mass = 100
             double3 xformOp:translate = (0, 0, 0)
+
+            over "collisions" (
+                prepend apiSchemas = ["PhysxCollisionAPI"]
+            )
+            {
+                double physx:contactOffset = 0.001
+                double physx:restOffset = 0
+            }
         }
 
         over "root_joint" (
@@ -138,6 +154,15 @@ def Xform "World"
                 double3 xformOp:scale = (1, 1, 1)
                 double3 xformOp:translate = (0, 0, 0)
                 uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+
+                over "collisions" (
+                    prepend apiSchemas = ["PhysxCollisionAPI", "PhysxTriangleMeshCollisionAPI", "PhysxSDFMeshCollisionAPI"]
+                )
+                {
+                    uniform token physics:approximation = "sdf"
+                    double physx:contactOffset = 0.001
+                    double physx:restOffset = 0
+                }
             }
 
             over "Looks"
@@ -357,11 +382,13 @@ def Xform "World"
         }
 
         def Plane "CollisionPlane" (
-            prepend apiSchemas = ["PhysicsCollisionAPI"]
+            prepend apiSchemas = ["PhysicsCollisionAPI", "PhysxCollisionAPI"]
         )
         {
             uniform token axis = "Z"
             uniform token purpose = "guide"
+            double physx:contactOffset = 0.001
+            double physx:restOffset = 0
         }
     }
 
@@ -519,7 +546,7 @@ def "Render" (
                 no_delete = true
             )
             {
-                rel camera = </World/franka/panda_hand/wrist_1>
+                rel camera = </OmniverseKit_Persp>
                 token omni:rtx:background:source:texture:textureMode = "repeatMirrored"
                 token omni:rtx:background:source:type = "domeLight"
                 bool omni:rtx:dlss:frameGeneration = 0
