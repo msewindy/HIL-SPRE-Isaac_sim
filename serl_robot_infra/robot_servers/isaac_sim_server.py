@@ -53,6 +53,7 @@ flags.DEFINE_integer("sim_width", 1280, "Simulation window width.")
 flags.DEFINE_integer("sim_height", 720, "Simulation window height.")
 flags.DEFINE_float("sim_hz", 60.0, "Simulation frequency (Hz).")
 flags.DEFINE_string("config_module", None, "Optional: Python module path for IMAGE_CROP config (e.g., 'experiments.ram_insertion.config').")
+flags.DEFINE_string("reset_randomize_gear", "", "Reset scene: 'true'=randomize gear position and gear base angle, 'false'=keep poses. Empty=use config RESET_RANDOMIZE_GEAR_AND_BASE when config_module is set.")
 flags.DEFINE_string("usd_path", None, "Path to the USD scene file (required). Scene should include robot, cameras, and task objects.")
 flags.DEFINE_string("robot_prim_path", "/World/franka", "Prim path of the robot in the USD scene.")
 flags.DEFINE_list("camera_prim_paths", ["/World/franka/panda_hand/wrist_1", "/World/franka/panda_hand/wrist_2"], "List of camera prim paths in the USD scene.")
@@ -292,7 +293,16 @@ class IsaacSimServer:
         self._gripper_left_finger_path = f"{self.robot_prim_path}/panda_leftfinger"
         self._gripper_right_finger_path = f"{self.robot_prim_path}/panda_rightfinger"
         self._grasp_filter_gear_path = None 
-        
+
+        # Reset Scene：是否随机化齿轮位置与底座角度（可由 config RESET_RANDOMIZE_GEAR_AND_BASE 或 --reset_randomize_gear 覆盖）
+        self.reset_randomize_gear_and_base = True
+        # 默认固定位置：在 __init__ 末尾从场景 USD 读取一次 gear/base 位姿，关闭随机化时重置到此
+        self._default_gear_base_poses = None
+        # 随机化范围（从 config 读取，缺省与原先硬编码一致）
+        self.gear_reset_x_range = (-0.10, 0.10)
+        self.gear_reset_y_range = (-0.035, 0.035)
+        self.gear_base_reset_angle_range = (-10.0, 10.0)
+
         # [GRASP] Parameters (Refined for 4cm Gear)
         self.grasp_threshold_deg = 4.5     # Alignment < 4.5 deg (Relaxed)
         self.grasp_dist_threshold = 0.02   # Center dist < 2cm
@@ -621,7 +631,21 @@ class IsaacSimServer:
                         
                         if env_config:
                              self._log(f"[VERIFY] Loaded Config Class: {env_config.__name__}")
-                             
+                             if hasattr(env_config, "RESET_RANDOMIZE_GEAR_AND_BASE"):
+                                 self.reset_randomize_gear_and_base = bool(env_config.RESET_RANDOMIZE_GEAR_AND_BASE)
+                                 self._log(f"[INFO] Config RESET_RANDOMIZE_GEAR_AND_BASE: {self.reset_randomize_gear_and_base}")
+                             if hasattr(env_config, "GEAR_RESET_X_RANGE"):
+                                 r = env_config.GEAR_RESET_X_RANGE
+                                 self.gear_reset_x_range = (float(r[0]), float(r[1]))
+                                 self._log(f"[INFO] Config GEAR_RESET_X_RANGE: {self.gear_reset_x_range}")
+                             if hasattr(env_config, "GEAR_RESET_Y_RANGE"):
+                                 r = env_config.GEAR_RESET_Y_RANGE
+                                 self.gear_reset_y_range = (float(r[0]), float(r[1]))
+                                 self._log(f"[INFO] Config GEAR_RESET_Y_RANGE: {self.gear_reset_y_range}")
+                             if hasattr(env_config, "GEAR_BASE_RESET_ANGLE_RANGE"):
+                                 r = env_config.GEAR_BASE_RESET_ANGLE_RANGE
+                                 self.gear_base_reset_angle_range = (float(r[0]), float(r[1]))
+                                 self._log(f"[INFO] Config GEAR_BASE_RESET_ANGLE_RANGE: {self.gear_base_reset_angle_range}")
                         if 'target_pose' in locals():
                              # 转换为 WXYZ 显示
                              quat_xyzw = target_pose[3:]
@@ -647,7 +671,27 @@ class IsaacSimServer:
             self.set_pose(target_pose)
         else:
             self._log("[WARNING] Could not determine initial pose, robot might fall!")
-        
+        # 从场景 USD 读取 gear/base 的默认固定位姿，关闭随机化时重置到此（不增加冗余 config）
+        try:
+            self._default_gear_base_poses = self._get_gear_and_base_world_poses()
+            if self._default_gear_base_poses and (self._default_gear_base_poses.get("gear") or self._default_gear_base_poses.get("base")):
+                self._log("[INFO] Saved default gear/base poses from scene (reset position when randomize=off).")
+        except Exception as e:
+            self._log(f"[WARNING] Could not save default gear/base poses: {e}")
+        # 命令行 --reset_randomize_gear 覆盖 config（空则不改；支持 true/false、1/0、yes/no、on/off）
+        _raw = (getattr(FLAGS, "reset_randomize_gear", None) or "").strip()
+        self._log(f"[VERIFY] --reset_randomize_gear from command line: {repr(_raw) if _raw else '(empty, using config)'}")
+        if _raw:
+            _lower = _raw.lower()
+            if _lower in ("true", "1", "yes", "on"):
+                self.reset_randomize_gear_and_base = True
+            elif _lower in ("false", "0", "no", "off"):
+                self.reset_randomize_gear_and_base = False
+            else:
+                self.reset_randomize_gear_and_base = (_lower == "true")
+                self._log(f"[WARNING] --reset_randomize_gear='{_raw}' unknown, treated as {self.reset_randomize_gear_and_base}")
+            self._log(f"[INFO] Override from --reset_randomize_gear='{_raw}' -> reset_randomize_gear_and_base={self.reset_randomize_gear_and_base}")
+        self._log(f"[VERIFY] Final reset_randomize_gear_and_base (used on reset_scene): {self.reset_randomize_gear_and_base}")
         # 调试计数器
         self.frame_count = 0
         self.last_log_time = time.time()
@@ -2152,10 +2196,188 @@ class IsaacSimServer:
             traceback.print_exc()
     
     
+    def _get_gear_and_base_world_poses(self):
+        """从当前场景读取 gear 与 gear_base 的世界位姿。
+        返回 dict: {"gear": (pos_xyz, quat_xyzw), "base": (pos_xyz, quat_xyzw)}，缺失的 prim 对应项为 None。
+        用于：初始化时保存默认固定位置；关闭随机化时恢复到此位置。
+        """
+        from pxr import UsdGeom
+        result = {"gear": None, "base": None}
+        stage = self.get_current_stage()
+        gear_prim_path = "/World/factory_gear_medium"
+        gear_prim = stage.GetPrimAtPath(gear_prim_path)
+        if not gear_prim.IsValid():
+            child = stage.GetPrimAtPath("/World/factory_gear_medium/factory_gear_medium")
+            if child.IsValid():
+                gear_prim = child.GetParent()
+        if gear_prim.IsValid():
+            xform = UsdGeom.Xformable(gear_prim)
+            mat = xform.ComputeLocalToWorldTransform(0)
+            pos = np.array(mat.ExtractTranslation())
+            q = mat.ExtractRotationQuat()
+            quat_wxyz = np.array([q.GetReal(), q.GetImaginary()[0], q.GetImaginary()[1], q.GetImaginary()[2]])
+            quat_xyzw = np.array([quat_wxyz[1], quat_wxyz[2], quat_wxyz[3], quat_wxyz[0]])
+            result["gear"] = (pos, quat_xyzw)
+        base_prim_path = "/World/factory_gear_base"
+        base_prim = stage.GetPrimAtPath(base_prim_path)
+        if not base_prim.IsValid():
+            base_prim = stage.GetPrimAtPath("/World/factory_gear_base/factory_gear_base")
+        if base_prim.IsValid():
+            xform = UsdGeom.Xformable(base_prim)
+            mat = xform.ComputeLocalToWorldTransform(0)
+            pos = np.array(mat.ExtractTranslation())
+            q = mat.ExtractRotationQuat()
+            quat_wxyz = np.array([q.GetReal(), q.GetImaginary()[0], q.GetImaginary()[1], q.GetImaginary()[2]])
+            quat_xyzw = np.array([quat_wxyz[1], quat_wxyz[2], quat_wxyz[3], quat_wxyz[0]])
+            result["base"] = (pos, quat_xyzw)
+        return result
+
+    def _set_gear_and_base_poses(self, saved):
+        """将 gear 与 gear_base 设为 saved 中的世界位姿。saved 为 _get_gear_and_base_world_poses() 的返回值。"""
+        from pxr import Gf, UsdGeom
+        import math
+        stage = self.get_current_stage()
+        if saved.get("gear") is not None:
+            pos, quat_xyzw = saved["gear"]
+            gear_prim_path = "/World/factory_gear_medium"
+            gear_prim = stage.GetPrimAtPath(gear_prim_path)
+            if not gear_prim.IsValid():
+                child = stage.GetPrimAtPath("/World/factory_gear_medium/factory_gear_medium")
+                if child.IsValid():
+                    gear_prim = child.GetParent()
+            if gear_prim.IsValid():
+                xform_gear = UsdGeom.Xformable(gear_prim)
+                ops = xform_gear.GetOrderedXformOps()
+                translate_op = next((op for op in ops if op.GetOpType() == UsdGeom.XformOp.TypeTranslate), None)
+                if translate_op:
+                    translate_op.Set(Gf.Vec3d(float(pos[0]), float(pos[1]), float(pos[2])))
+                else:
+                    xform_gear.AddTranslateOp().Set(Gf.Vec3d(float(pos[0]), float(pos[1]), float(pos[2])))
+                quat = Gf.Quatd(quat_xyzw[3], quat_xyzw[0], quat_xyzw[1], quat_xyzw[2])
+                rot = Gf.Rotation(quat)
+                angles_rad = rot.Decompose(Gf.Vec3d.XAxis(), Gf.Vec3d.YAxis(), Gf.Vec3d.ZAxis())
+                angles_deg = Gf.Vec3d(math.degrees(angles_rad[0]), math.degrees(angles_rad[1]), math.degrees(angles_rad[2]))
+                for op in ops:
+                    if op.GetOpType() in [UsdGeom.XformOp.TypeRotateZ, UsdGeom.XformOp.TypeRotateXYZ]:
+                        op.Set(angles_deg)
+                        break
+                self._log(f"[RESET] Gear restored to default pos={np.round(pos, 4)}")
+        if saved.get("base") is not None:
+            pos, quat_xyzw = saved["base"]
+            base_prim_path = "/World/factory_gear_base"
+            base_prim = stage.GetPrimAtPath(base_prim_path)
+            if not base_prim.IsValid():
+                base_prim_path = "/World/factory_gear_base/factory_gear_base"
+                base_prim = stage.GetPrimAtPath(base_prim_path)
+            if base_prim.IsValid():
+                xform_base = UsdGeom.Xformable(base_prim)
+                ops = xform_base.GetOrderedXformOps()
+                translate_op = next((op for op in ops if op.GetOpType() == UsdGeom.XformOp.TypeTranslate), None)
+                if translate_op:
+                    translate_op.Set(Gf.Vec3d(float(pos[0]), float(pos[1]), float(pos[2])))
+                quat = Gf.Quatd(quat_xyzw[3], quat_xyzw[0], quat_xyzw[1], quat_xyzw[2])
+                rot = Gf.Rotation(quat)
+                angles_rad = rot.Decompose(Gf.Vec3d.XAxis(), Gf.Vec3d.YAxis(), Gf.Vec3d.ZAxis())
+                angles_deg = Gf.Vec3d(math.degrees(angles_rad[0]), math.degrees(angles_rad[1]), math.degrees(angles_rad[2]))
+                rotate_op = next((op for op in ops if op.GetOpType() in [UsdGeom.XformOp.TypeRotateZ, UsdGeom.XformOp.TypeRotateXYZ]), None)
+                if rotate_op:
+                    rotate_op.Set(angles_deg)
+                else:
+                    xform_base.AddRotateXYZOp().Set(angles_deg)
+                self._log(f"[RESET] Gear base restored to default pos={np.round(pos, 4)}")
+
+    def _apply_gear_and_base_reset_position(self, do_random: bool):
+        """按默认固定位置设定 gear 与 gear_base。
+        - do_random=False：恢复到 __init__ 时从场景保存的默认位姿（不增加冗余 config）。
+        - do_random=True：在默认位姿基础上加随机偏移（gear xy ± 范围，base Z ±10°）。
+        """
+        from pxr import Gf, UsdGeom
+        default = getattr(self, "_default_gear_base_poses", None)
+        if default is None or (not default.get("gear") and not default.get("base")):
+            self._log("[WARNING] No default gear/base poses saved; cannot apply reset position.")
+            return
+        if not do_random:
+            self._set_gear_and_base_poses(default)
+            return
+        # 随机化：在默认位姿上加偏移（范围从 config 读取）
+        stage = self.get_current_stage()
+        x_range = getattr(self, "gear_reset_x_range", (-0.10, 0.10))
+        y_range = getattr(self, "gear_reset_y_range", (-0.035, 0.035))
+        angle_range = getattr(self, "gear_base_reset_angle_range", (-10.0, 10.0))
+        rand_x = np.random.uniform(x_range[0], x_range[1])
+        rand_y = np.random.uniform(y_range[0], y_range[1])
+        rand_deg = np.random.uniform(angle_range[0], angle_range[1])
+        base_pos = default["gear"][0] if default.get("gear") else np.array([0.0, -0.485, 0.40])
+        gear_x = base_pos[0] + rand_x
+        gear_y = base_pos[1] + rand_y
+        gear_z = base_pos[2]
+        # 默认 base Z 角（从 quat_xyzw 提取 euler Z，不依赖 scipy）
+        if default.get("base"):
+            _, q = default["base"]
+            w, x, y, z = q[3], q[0], q[1], q[2]
+            siny_cosp = 2.0 * (w * z + x * y)
+            cosy_cosp = 1.0 - 2.0 * (y * y + z * z)
+            base_z_rad = np.arctan2(siny_cosp, cosy_cosp)
+            base_angle_deg = np.degrees(base_z_rad) + rand_deg
+        else:
+            base_angle_deg = rand_deg
+        # 1) Gear position
+        gear_prim_path = "/World/factory_gear_medium"
+        gear_prim = stage.GetPrimAtPath(gear_prim_path)
+        if not gear_prim.IsValid():
+            child = stage.GetPrimAtPath("/World/factory_gear_medium/factory_gear_medium")
+            gear_prim = child.GetParent() if child.IsValid() else child
+        if gear_prim.IsValid():
+            xform_gear = UsdGeom.Xformable(gear_prim)
+            ops = xform_gear.GetOrderedXformOps()
+            translate_op = next((op for op in ops if op.GetOpType() == UsdGeom.XformOp.TypeTranslate), None)
+            if translate_op:
+                translate_op.Set(Gf.Vec3d(gear_x, gear_y, gear_z))
+            else:
+                xform_gear.AddTranslateOp().Set(Gf.Vec3d(gear_x, gear_y, gear_z))
+            self._log(f"[RESET] Gear randomized -> x={gear_x:.3f}, y={gear_y:.3f}, z={gear_z:.3f}")
+        # 2) Gear base rotation
+        base_prim_path = "/World/factory_gear_base"
+        base_prim = stage.GetPrimAtPath(base_prim_path)
+        if not base_prim.IsValid():
+            base_prim_path = "/World/factory_gear_base/factory_gear_base"
+            base_prim = stage.GetPrimAtPath(base_prim_path)
+        if base_prim.IsValid():
+            xform_base = UsdGeom.Xformable(base_prim)
+            ops = xform_base.GetOrderedXformOps()
+            rotate_op = next((op for op in ops if op.GetOpType() in [UsdGeom.XformOp.TypeRotateZ, UsdGeom.XformOp.TypeRotateXYZ]), None)
+            if not rotate_op:
+                rotate_op = xform_base.AddRotateXYZOp()
+            rotate_op.Set(Gf.Vec3d(0, 0, base_angle_deg))
+            self._log(f"[RESET] Gear base randomized -> Z_deg={base_angle_deg:.2f}")
+            try:
+                joint_prim = None
+                for child in base_prim.GetChildren():
+                    if child.GetTypeName() == "PhysicsFixedJoint":
+                        joint_prim = child
+                        break
+                if not joint_prim and base_prim_path.startswith("/World/factory_gear_base/"):
+                    nested = stage.GetPrimAtPath(f"{base_prim_path}/factory_gear_base")
+                    if nested.IsValid():
+                        for child in nested.GetChildren():
+                            if child.GetTypeName() == "PhysicsFixedJoint":
+                                joint_prim = child
+                                break
+                if joint_prim:
+                    delta_rot = Gf.Rotation(Gf.Vec3d(0, 0, 1), rand_deg)
+                    delta_quat = delta_rot.GetQuat()
+                    rot1_attr = joint_prim.GetAttribute("physics:localRot1")
+                    current_quat = rot1_attr.Get() or Gf.Quatf(1.0)
+                    try:
+                        rot1_attr.Set(Gf.Quatf(delta_quat) * current_quat)
+                    except Exception:
+                        rot1_attr.Set(Gf.Quatd(delta_quat) * current_quat)
+            except Exception as e_joint:
+                self._log(f"[WARNING] FixedJoint update: {e_joint}")
+
     def _execute_reset_scene(self):
         """实际执行场景重置（在主线程调用）
-        顺序：先解绑齿轮与夹爪（若存在）→ 夹爪打开 → world.reset() → 机械臂回初始位置 → 齿轮位置随机摆放 → base 随机 → warmup
-        避免机械臂与齿轮仍绑在一起时同时复位，导致机械臂把齿轮甩飞。
+        顺序：解绑齿轮与夹爪 → 夹爪打开 → world.reset() → 机械臂回初始位置 → gear/base 设为 config 的 reset position（或在该位置上随机偏移）→ warmup
         """
         self._log("[INFO] Executing Safe Scene Reset on Main Thread...")
         try:
@@ -2181,166 +2403,13 @@ class IsaacSimServer:
                 self.franka.set_joint_positions(initial_joint_positions)
             self._execute_set_gripper(1.0)  # 复位后再次确保夹爪打开
             
-            # ---------- 4. 齿轮再进入位置随机摆放（在机械臂已复位之后） ----------
+            # ---------- 4. 齿轮/底座位姿：按 config 的 reset position 设定（关闭随机化=固定位置，打开=在该位置上随机偏移）----------
+            _do_random = getattr(self, "reset_randomize_gear_and_base", True)
+            self._log(f"[INFO] Reset scene: reset_randomize_gear_and_base={_do_random} -> gear/base to config reset position {'+ random' if _do_random else '(fixed)'}")
             try:
-                from pxr import Gf, UsdGeom
-                stage = self.get_current_stage()
-                
-                # 1) 齿轮位置随机摆放（机械臂已复位后再设，避免甩飞）
-                # Random range: x:[-0.15, 0.15], y:[-0.52, -0.45]
-                gear_prim_path = "/World/factory_gear_medium"
-                gear_prim = stage.GetPrimAtPath(gear_prim_path)
-                if not gear_prim.IsValid():
-                    child = stage.GetPrimAtPath("/World/factory_gear_medium/factory_gear_medium")
-                    if child.IsValid():
-                        gear_prim = child.GetParent()  # 对父 Xform 设位置
-                    else:
-                        gear_prim = child  # 保持 invalid
-                if not gear_prim.IsValid():
-                    self._log(f"[WARNING] Reset: gear_medium prim not found at {gear_prim_path}, gear may disappear after reset.")
-                if gear_prim.IsValid():
-                    rand_x = np.random.uniform(-0.10, 0.10)
-                    rand_y = np.random.uniform(-0.52, -0.45)
-                    
-                    xform_gear = UsdGeom.Xformable(gear_prim)
-                    # Get current transform to preserve Z and rotation
-                    # We assume standard translation op exists or we add one
-                    # Simplified: We just set the translation attribute if possible, but Ops are safer
-                    
-                    # Method: Find 'xformOp:translate'
-                    ops = xform_gear.GetOrderedXformOps()
-                    translate_op = None
-                    for op in ops:
-                        if op.GetOpType() == UsdGeom.XformOp.TypeTranslate:
-                            translate_op = op
-                            break
-                    
-                    if translate_op:
-                        current_val = translate_op.Get()
-                        # current_val is Gf.Vec3d
-                        new_pos = Gf.Vec3d(rand_x, rand_y, current_val[2])
-                        translate_op.Set(new_pos)
-                        self._log(f"[RANDOMIZATION] Gear Medium set to: x={rand_x:.3f}, y={rand_y:.3f}")
-                    else:
-                        # Add op if missing (shouldn't happen for these assets)
-                        # self._log("[WARNING] No translate op found for gear_medium")
-                        pass
-                
-                # 2) Randomize Gear Base Rotation
-                # Random range: Z-axis +/- 10 degrees
-                base_prim_path = "/World/factory_gear_base"
-                base_prim = stage.GetPrimAtPath(base_prim_path)
-                
-                # [DEBUG] Fallback check
-                if not base_prim.IsValid():
-                     base_prim_path = "/World/factory_gear_base/factory_gear_base"
-                     base_prim = stage.GetPrimAtPath(base_prim_path)
-
-                if base_prim.IsValid():
-                    rand_deg = np.random.uniform(-10, 10)
-                    
-                    xform_base = UsdGeom.Xformable(base_prim)
-                    ops = xform_base.GetOrderedXformOps()
-                    rotate_op = None
-                    for op in ops:
-                         # Check for RotateZ or RotateXYZ
-                         if op.GetOpType() in [UsdGeom.XformOp.TypeRotateZ, UsdGeom.XformOp.TypeRotateXYZ]:
-                             rotate_op = op
-                             break
-                    
-                    if not rotate_op:
-                        # [FIX] If no rotate op exists, add one
-                        rotate_op = xform_base.AddRotateXYZOp()
-                        self._log(f"[RANDOMIZATION] Added new RotateXYZ op to Gear Base")
-                    
-                    if rotate_op:
-                        current_rot = rotate_op.Get()
-                        if current_rot is None:
-                            current_rot = Gf.Vec3d(0, 0, 0)
-                            
-                        if isinstance(current_rot, (float, int)): # RotateZ is scalar
-                            new_rot = current_rot + rand_deg
-                        else: # RotateXYZ is Vec3
-                            # Assuming Z is index 2
-                            new_rot = Gf.Vec3d(current_rot[0], current_rot[1], current_rot[2] + rand_deg)
-                        
-                        rotate_op.Set(new_rot)
-                        self._log(f"[RANDOMIZATION] Gear Base rotated by: {rand_deg:.2f} deg")
-                        
-                        # [FIX] Update FixedJoint Constraint
-                        # Since the base contains a FixedJoint to static world, rotating the base 
-                        # enables the joint to fight back unless we rotate the joint's world anchor too.
-                        try:
-                             # Search for FixedJoint under the rigid body
-                             # Rigid body is at /World/factory_gear_base/factory_gear_base
-                             # NOTE: We just found base_prim, let's use that as root to search or assume standard structure
-                             # If base_prim is the Xform, the RigidBody is likely inside or IT IS the rigid body.
-                             # Let's search under base_prim first, then base_prim_path/factory_gear_base
-                             
-                             joint_prim = None
-                             
-                             # Search 1: Under base_prim itself
-                             for child in base_prim.GetChildren():
-                                 if child.GetTypeName() == "PhysicsFixedJoint":
-                                     joint_prim = child
-                                     break
-                             
-                             # Search 2: If base_prim is the wrapper Xform, check child "factory_gear_base"
-                             if not joint_prim:
-                                 nested_rb = stage.GetPrimAtPath(f"{base_prim_path}/factory_gear_base")
-                                 if nested_rb.IsValid():
-                                     for child in nested_rb.GetChildren():
-                                         if child.GetTypeName() == "PhysicsFixedJoint":
-                                             joint_prim = child
-                                             break
-                                             
-                             if joint_prim:
-                                     # Assuming Body1 is World (implicit or explicit)
-                                     # We need to rotate 'physics:localRot1' (Frame in Body1) by rand_deg
-                                     
-                                     # Create Delta Quat (Z-axis rotation)
-                                     # Gf.Rotation takes degrees
-                                     delta_rot = Gf.Rotation(Gf.Vec3d(0,0,1), rand_deg)
-                                     delta_quat = delta_rot.GetQuat() # Gf.Quatd
-                                     
-                                     # Get current localRot1
-                                     # Note: Attribute might be Quatf or Quatd
-                                     rot1_attr = joint_prim.GetAttribute("physics:localRot1")
-                                     current_quat = rot1_attr.Get() # Gf.Quatf or Gf.Quatd
-                                     
-                                     if current_quat is None:
-                                         # Default to Identity if not set
-                                         current_quat = Gf.Quatf(1.0)
-                                     
-                                     # Convert delta to same type (Quatf usually)
-                                     # Gf.Quatf constructor from Gf.Quatd
-                                     try:
-                                         delta_quat_f = Gf.Quatf(delta_quat)
-                                         # Multiply: New = Delta * Old (Apply rotation in World Frame)
-                                         new_quat = delta_quat_f * current_quat
-                                         rot1_attr.Set(new_quat)
-                                         self._log(f"[RANDOMIZATION] FixedJoint 'localRot1' updated for base rotation")
-                                     except:
-                                         # Fallback for double precision
-                                         delta_quat_d = Gf.Quatd(delta_quat)
-                                         new_quat = delta_quat_d * current_quat
-                                         rot1_attr.Set(new_quat)
-                                         self._log(f"[RANDOMIZATION] FixedJoint 'localRot1' updated (double)")
-                                         
-                        except Exception as e_joint:
-                             self._log(f"[WARNING] Failed to update FixedJoint: {e_joint}")
-                else:
-                    # [DEBUG] Log failure to find base prim
-                    self._log(f"[WARNING] Could not find factory_gear_base at {base_prim_path}")
-                    try:
-                        world = stage.GetPrimAtPath("/World")
-                        children = [p.GetName() for p in world.GetChildren()]
-                        self._log(f"[DEBUG] Children of /World: {children}")
-                    except:
-                        pass
-            
-            except Exception as e_rand:
-                self._log(f"[WARNING] Domain Randomization failed: {e_rand}")
+                self._apply_gear_and_base_reset_position(_do_random)
+            except Exception as e_apply:
+                self._log(f"[WARNING] Failed to apply gear/base reset position: {e_apply}")
             
             # [STABILITY] Warmup physics to let the simulator digest the teleportation
             # Like in __init__, we need to step the physics to ensure the robot is actually at the target
@@ -2637,7 +2706,7 @@ def main(_):
         
         @socketio.on('disconnect')
         def handle_disconnect():
-            """WebSocket 连接断开"""
+            """WebSocket 连接断开。断开后若仍有 HTTP 写回该连接，可能触发 werkzeug 的 write() before start_response，可忽略。"""
             print(f"[INFO] WebSocket client disconnected: {request.sid}")
             with isaac_sim_server.ws_lock:
                 if request.sid in isaac_sim_server.ws_clients:

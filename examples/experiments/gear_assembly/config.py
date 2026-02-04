@@ -150,7 +150,16 @@ class IsaacSimEnvConfig(DefaultEnvConfig):
     RANDOM_RESET = False
     RANDOM_XY_RANGE = 0.0
     RANDOM_RZ_RANGE = 0.0
-    
+
+    # Reset Scene：是否随机化齿轮位置与底座角度（True=在默认固定位置上随机偏移，False=每次重置到场景默认固定位置）
+    RESET_RANDOMIZE_GEAR_AND_BASE = True
+    # 随机化范围（仅当 RESET_RANDOMIZE_GEAR_AND_BASE=True 时生效）：(min, max)
+    # 中齿轮位置 X/Y 随机偏移范围（米）
+    GEAR_RESET_X_RANGE = (-0.10, 0.10)
+    GEAR_RESET_Y_RANGE = (-0.035, 0.035)
+    # 底座 Z 轴旋转随机偏移范围（度）
+    GEAR_BASE_RESET_ANGLE_RANGE = (-10.0, 10.0)
+
     # 动作缩放
     ACTION_SCALE = (0.01, 0.06, 1)
     
