@@ -42,6 +42,7 @@ class IsaacSimFrankaEnv(gym.Env):
         fake_env=True,  # 始终为 True（仿真环境）
         save_video=False,
         config: DefaultEnvConfig = None,
+        skip_server_connection=False,  # 如果为 True，跳过服务器连接（用于 learner 仅获取空间定义）
     ):
         """
         初始化 Isaac Sim 环境
@@ -63,7 +64,9 @@ class IsaacSimFrankaEnv(gym.Env):
         self.fake_env = fake_env
         self.save_video = save_video
         self.max_episode_length = config.MAX_EPISODE_LENGTH
+        self._original_max_episode_length = config.MAX_EPISODE_LENGTH  # 保存原始值
         self.display_image = config.DISPLAY_IMAGE
+        self.skip_server_connection = skip_server_connection  # 设置 skip_server_connection 标志
         
         # 服务器 URL
         self.url = config.SERVER_URL
@@ -133,22 +136,31 @@ class IsaacSimFrankaEnv(gym.Env):
         self._connection_lost = False
         
         # 建立 WebSocket 连接（用于图像接收）
-        self._connect_websocket()
+        # [FIX] 延迟连接，避免在 multiprocessing fork 之前连接导致连接状态被破坏
+        # 如果环境被包装（如 GamepadIntervention），fork 会在包装器初始化时发生
+        # 因此延迟到第一次需要图像时再连接
+        self._ws_connection_attempted = False
+        # 不在这里立即连接，延迟到第一次获取图像时
         
         # [ROBUSTNESS] 强制等待服务器就绪并同步初始状态，防止起点跳变
-        self._log("[INFO] Synchronizing with Server...")
-        connected = False
-        for i in range(20): # 最多等 10 秒
-             self._update_currpos()
-             if self.currpos is not None and not np.allclose(self.currpos[:3], [0.5, 0.0, 0.5]):
-                  connected = True
-                  break
-             time.sleep(0.5)
-        
-        if not connected:
-             self._log("[WARNING] Server not ready or state not synced. Robot might jump.")
+        # [FIX] 如果 skip_server_connection=True（learner 模式），跳过服务器连接
+        if not self.skip_server_connection:
+            self._log("[INFO] Synchronizing with Server...")
+            connected = False
+            for i in range(20): # 最多等 10 秒
+                self._update_currpos()
+                if self.currpos is not None and not np.allclose(self.currpos[:3], [0.5, 0.0, 0.5]):
+                    connected = True
+                    break
+                time.sleep(0.5)
+            
+            if not connected:
+                self._log("[WARNING] Server not ready or state not synced. Robot might jump.")
+            else:
+                self._log(f"[INFO] Initial state synced at: {np.round(self.currpos[:3], 3)}")
         else:
-             self._log(f"[INFO] Initial state synced at: {np.round(self.currpos[:3], 3)}")
+            # Learner 模式：不连接服务器，只定义空间
+            self._log("[INFO] Skipping server connection (learner mode - only need space definitions)")
 
         # 键盘监听（用于终止）
         if not fake_env:
@@ -194,11 +206,10 @@ class IsaacSimFrankaEnv(gym.Env):
         try:
             import socketio
             
-            # 构建 WebSocket URL
-            ws_url = self.url.replace("http://", "ws://").replace("https://", "wss://")
+            # python-socketio 的 Client.connect() 需要使用 HTTP URL，而不是 WebSocket URL
+            # 它会自动处理协议升级（从 polling 到 websocket）
             # 移除末尾的 '/'
-            if ws_url.endswith('/'):
-                ws_url = ws_url[:-1]
+            http_url = self.url.rstrip('/')
             
             # 创建 SocketIO 客户端
             self.ws_client = socketio.Client()
@@ -254,8 +265,21 @@ class IsaacSimFrankaEnv(gym.Env):
                 print("[WARNING] WebSocket disconnected from Isaac Sim server")
             
             # 连接到服务器
-            self.ws_client.connect(ws_url, wait_timeout=5)
-            self.ws_connected = True
+            # python-socketio 会自动处理 /socket.io 路径和协议升级
+            try:
+                self.ws_client.connect(
+                    http_url, 
+                    wait_timeout=5, 
+                    transports=['websocket', 'polling'],
+                    socketio_path='/socket.io'
+                )
+                self.ws_connected = True
+            except Exception as connect_error:
+                # 如果连接失败，记录详细错误信息
+                print(f"[WARNING] WebSocket connection failed: {connect_error}")
+                print(f"[WARNING] Attempted URL: {http_url}")
+                print(f"[WARNING] SocketIO path: /socket.io")
+                raise
             
         except ImportError:
             print("[WARNING] socketio not installed. WebSocket image streaming disabled.")
@@ -274,9 +298,13 @@ class IsaacSimFrankaEnv(gym.Env):
             arr = np.array(pos).astype(np.float32)
             # [DIAGNOSTIC] Log sent data (转换为 WXYZ 显示)
             quat_wxyz = np.array([arr[6], arr[3], arr[4], arr[5]])
-            # self._log(f"[NET] Sending Pose: {np.round(arr[:3], 3)} Quat(WXYZ): {np.round(quat_wxyz, 3)}")
+            # 定期打印发送的命令（每100步或第一步）
+            if hasattr(self, 'curr_path_length') and (self.curr_path_length % 100 == 0 or self.curr_path_length == 0):
+                print(f"[BC EVAL] Step {self.curr_path_length}: Sending pose to {self.url}pose - Pos: {np.round(arr[:3], 3)}, Quat(WXYZ): {np.round(quat_wxyz, 3)}")
             data = {"arr": arr.tolist()}
-            self.session.post(self.url + "pose", json=data, timeout=0.5)
+            response = self.session.post(self.url + "pose", json=data, timeout=0.5)
+            if response.status_code != 200:
+                print(f"[WARNING] Pose command returned status code {response.status_code}")
             
             if self._connection_lost:
                 print("[INFO] Connection to Isaac Sim server restored.")
@@ -284,7 +312,12 @@ class IsaacSimFrankaEnv(gym.Env):
                 
         except Exception as e:
             if not self._connection_lost:
-                print(f"[WARNING] Failed to send pose command: {e}")
+                print(f"[ERROR] Failed to send pose command: {e}")
+                print(f"[ERROR] URL: {self.url}pose")
+                print(f"[ERROR] Session exists: {self.session is not None}")
+                print(f"[ERROR] Skip server connection: {getattr(self, 'skip_server_connection', 'unknown')}")
+                import traceback
+                traceback.print_exc()
                 self._connection_lost = True
     
     def _send_gripper_command(self, pos: float, mode="binary"):
@@ -292,17 +325,26 @@ class IsaacSimFrankaEnv(gym.Env):
         try:
             if mode == "binary":
                 if pos <= -0.5:
-                    self.session.post(self.url + "close_gripper", timeout=0.5)
+                    response = self.session.post(self.url + "close_gripper", timeout=0.5)
+                    if response.status_code != 200:
+                        print(f"[WARNING] Close gripper command returned status code {response.status_code}")
                 elif pos >= 0.5:
-                    self.session.post(self.url + "open_gripper", timeout=0.5)
+                    response = self.session.post(self.url + "open_gripper", timeout=0.5)
+                    if response.status_code != 200:
+                        print(f"[WARNING] Open gripper command returned status code {response.status_code}")
             elif mode == "continuous":
                 # 连续控制模式
                 gripper_pos = (pos + 1.0) / 2.0  # 从 [-1, 1] 映射到 [0, 1]
-                self.session.post(
+                # 定期打印发送的命令（每100步或第一步）
+                if hasattr(self, 'curr_path_length') and (self.curr_path_length % 100 == 0 or self.curr_path_length == 0):
+                    print(f"[BC EVAL] Step {self.curr_path_length}: Sending gripper to {self.url}move_gripper - Value: {gripper_pos:.3f} (raw: {pos:.3f})")
+                response = self.session.post(
                     self.url + "move_gripper",
                     json={"gripper_pos": float(gripper_pos)},
                     timeout=0.5
                 )
+                if response.status_code != 200:
+                    print(f"[WARNING] Move gripper command returned status code {response.status_code}")
             
             if self._connection_lost:
                 print("[INFO] Connection to Isaac Sim server restored.")
@@ -310,7 +352,12 @@ class IsaacSimFrankaEnv(gym.Env):
 
         except Exception as e:
             if not self._connection_lost:
-                print(f"[WARNING] Failed to send gripper command: {e}")
+                print(f"[ERROR] Failed to send gripper command: {e}")
+                print(f"[ERROR] URL: {self.url}move_gripper (or close/open_gripper)")
+                print(f"[ERROR] Session exists: {self.session is not None}")
+                print(f"[ERROR] Skip server connection: {getattr(self, 'skip_server_connection', 'unknown')}")
+                import traceback
+                traceback.print_exc()
                 self._connection_lost = True
     
     def _update_currpos(self):
@@ -366,6 +413,16 @@ class IsaacSimFrankaEnv(gym.Env):
     
     def _get_images(self) -> Dict[str, np.ndarray]:
         """从 WebSocket 缓存获取最新图像"""
+        # [FIX] 延迟连接 WebSocket，避免在 multiprocessing fork 之前连接
+        # 如果环境被包装（如 GamepadIntervention），fork 会在包装器初始化时发生
+        # 因此延迟到第一次需要图像时再连接
+        if not self._ws_connection_attempted:
+            self._ws_connection_attempted = True
+            # 延迟连接，确保在 fork 之后
+            import time
+            time.sleep(0.1)  # 给 fork 一些时间完成
+            self._connect_websocket()
+        
         images = {}
         with self.image_cache_lock:
             for cam_key in self.config.REALSENSE_CAMERAS.keys():
@@ -868,3 +925,19 @@ class IsaacSimFrankaEnv(gym.Env):
             self.save_video_recording()
         
         print("[INFO] Isaac Sim Franka Environment closed")
+    
+    def set_max_episode_length(self, length: int):
+        """
+        动态设置episode最大长度
+        
+        Args:
+            length: 新的最大episode长度
+        """
+        self.max_episode_length = length
+        if hasattr(self, '_original_max_episode_length'):
+            # 确保不超过原始配置的最大值
+            if length > self._original_max_episode_length:
+                self.max_episode_length = self._original_max_episode_length
+                print(f"[WARNING] Requested max_episode_length {length} exceeds original value {self._original_max_episode_length}. Using {self._original_max_episode_length}.")
+            else:
+                print(f"[INFO] Max episode length updated to {length} (original: {self._original_max_episode_length})")

@@ -19,6 +19,6 @@ setup(
         "flask",
         "defusedxml",
         "pygame>=2.0.0",
-        "numpy<2.0",
+        "numpy>=1.24.3",  # 移除 <2.0 限制，允许使用 numpy 2.0（训练机器上使用 JAX 0.9.0 需要）
     ],
 )

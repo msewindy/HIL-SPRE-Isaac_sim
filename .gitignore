@@ -5,6 +5,7 @@
 venv/
 env/
 *.local
+demo_data/
 
 # Python 编译与缓存
 __pycache__/
@@ -80,3 +81,6 @@ install/
 *.log
 *.tmp
 .cache/
+
+
+hil-serl/

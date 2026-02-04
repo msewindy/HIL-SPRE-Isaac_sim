@@ -30,7 +30,14 @@ def main(_):
     env = config.get_environment(fake_env=True, save_video=False, classifier=False)
 
     devices = jax.local_devices()
-    sharding = jax.sharding.PositionalSharding(devices)
+    # JAX 0.9.0+ removed PositionalSharding, use NamedSharding instead
+    if len(devices) == 1:
+        sharding = jax.sharding.SingleDeviceSharding(devices[0])
+    else:
+        # For multiple devices, use NamedSharding with a mesh
+        from jax.sharding import Mesh, NamedSharding, PartitionSpec
+        mesh = Mesh(devices, axis_names=('devices',))
+        sharding = NamedSharding(mesh, PartitionSpec('devices'))
     
     # Create buffer for positive transitions
     pos_buffer = ReplayBuffer(
@@ -54,7 +61,7 @@ def main(_):
         sample_args={
             "batch_size": FLAGS.batch_size // 2,
         },
-        device=sharding.replicate(),
+        device=sharding,
     )
     
     # Create buffer for negative transitions
@@ -80,7 +87,7 @@ def main(_):
         sample_args={
             "batch_size": FLAGS.batch_size // 2,
         },
-        device=sharding.replicate(),
+        device=sharding,
     )
 
     print(f"failed buffer size: {len(neg_buffer)}")

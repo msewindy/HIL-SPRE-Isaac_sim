@@ -14,6 +14,6 @@
 # 可选：--reset_randomize_gear=true/false 控制 reset scene 时是否随机化齿轮位置与底座角度（不传则用 config 中 RESET_RANDOMIZE_GEAR_AND_BASE）
 
 # 演示行为收集record demos运行
-python examples/record_demos.py --exp_name=gear_assembly --successes_needed=5 --fake_env
+python examples/record_demos.py --exp_name=gear_assembly --successes_needed=25 --fake_env
 
 
