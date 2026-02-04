@@ -435,13 +435,13 @@ class IsaacSimGearAssemblyEnvEnhanced(IsaacSimFrankaEnv):
                             if not self.success_confirmed:
                                 self.success_confirmed = True
                                 print(f"\n[REWARD-SUCCESS] Success Confirmed (Held for {self.consecutive_success_steps} steps / {self.consecutive_success_steps / self.hz:.2f}s)!")
-                            print(f"  -> Gear Z-Height: {gear_pos[2]:.4f} (Thresh: < 0.402)")
-                            print(f"  -> Z-Alignment: {dot_z:.4f} (Thresh: > 0.996)")
-                            print(f"  -> Hole in Base Frame: {hole_in_base_frame} (Target: [0.02, 0, 0])")
-                            print(f"  -> Errors: X_err={x_error:.4f}, Y_err={y_error:.4f} (Thresh: 0.002)")
-                            print(f"  -> Raw Gear Pos: {gear_pos}")
-                            print(f"  -> Raw Base Pos: {base_pos}")
-                            return 1.0
+                        print(f"  -> Gear Z-Height: {gear_pos[2]:.4f} (Thresh: < 0.402)")
+                        print(f"  -> Z-Alignment: {dot_z:.4f} (Thresh: > 0.996)")
+                        print(f"  -> Hole in Base Frame: {hole_in_base_frame} (Target: [0.02, 0, 0])")
+                        print(f"  -> Errors: X_err={x_error:.4f}, Y_err={y_error:.4f} (Thresh: 0.002)")
+                        print(f"  -> Raw Gear Pos: {gear_pos}")
+                        print(f"  -> Raw Base Pos: {base_pos}")
+                        return 1.0
                         else:
                             # 正在累积成功步数，但尚未达到要求
                             # 可选：打印进度信息（每10步打印一次，避免刷屏）
@@ -454,7 +454,7 @@ class IsaacSimGearAssemblyEnvEnhanced(IsaacSimFrankaEnv):
                             print(f"[REWARD-RESET] Success condition lost. Reset counter from {self.consecutive_success_steps} steps.")
                         self.consecutive_success_steps = 0
                         self.success_confirmed = False
-                        return 0.0
+                    return 0.0
                     
         except Exception as e:
             # print(f"[WARNING] GT Reward calculation failed: {e}")
