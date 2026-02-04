@@ -12,5 +12,5 @@
     --config_module=examples.experiments.gear_assembly.config
 
 # 演示行为收集record demos运行
-python examples/record_demos.py --exp_name=gear_assembly --successes_needed=5 --fake_env
+python examples/record_demos.py --exp_name=gear_assembly --successes_needed=25 --fake_env
 

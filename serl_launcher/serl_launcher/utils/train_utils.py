@@ -139,10 +139,68 @@ def load_resnet10_params(agent, image_keys=("image",), public=True):
                 raise RuntimeError(e)
             print("Download complete!")
 
-        with open(file_path, "rb") as f:
-            encoder_params = pkl.load(f)
+        # Handle JAX version incompatibility when loading pickle files
+        # JAX 0.8+ removed 'named_shape' from ShapedArray, but old pickles may contain it
+        # Patch JAX's _reconstruct_array to filter out named_shape
+        import jax._src.array as jax_array
+        import jax._src.core as jax_core
+        original_reconstruct = jax_array._reconstruct_array
+        original_shaped_array_update = jax_core.ShapedArray.update
+        
+        def patched_reconstruct(fun, args, arr_state, aval_state):
+            # Filter out 'named_shape' if present (JAX 0.8+ doesn't support it)
+            # JAX 0.8.3 signature: (fun, args, arr_state, aval_state)
+            if isinstance(aval_state, dict) and 'named_shape' in aval_state:
+                aval_state = {k: v for k, v in aval_state.items() if k != 'named_shape'}
+            return original_reconstruct(fun, args, arr_state, aval_state)
+        
+        def patched_shaped_array_update(self, **kwargs):
+            # Filter out 'named_shape' if present
+            kwargs = {k: v for k, v in kwargs.items() if k != 'named_shape'}
+            return original_shaped_array_update(self, **kwargs)
+        
+        # Temporarily patch the functions
+        jax_array._reconstruct_array = patched_reconstruct
+        jax_core.ShapedArray.update = patched_shaped_array_update
+        
+        try:
+            with open(file_path, "rb") as f:
+                encoder_params = pkl.load(f)
+        except (TypeError, AttributeError) as e:
+            # If loading fails, delete the file and re-download
+            import warnings
+            warnings.warn(f"Pickle loading failed due to JAX version incompatibility: {e}")
+            if os.path.exists(file_path):
+                print(f"Removing incompatible pickle file: {file_path}")
+                os.remove(file_path)
+                # Re-download
+                url = f"https://github.com/rail-berkeley/serl/releases/download/resnet10/{file_name}"
+                print(f"Re-downloading from {url}")
+                try:
+                    response = requests.get(url, stream=True, timeout=60)
+                    response.raise_for_status()
+                    total_size = int(response.headers.get("content-length", 0))
+                    block_size = 1024
+                    t = tqdm(total=total_size, unit="iB", unit_scale=True)
+                    with open(file_path, "wb") as f_dl:
+                        for data in response.iter_content(block_size):
+                            t.update(len(data))
+                            f_dl.write(data)
+                    t.close()
+                    print("Re-downloaded. Retrying load...")
+                    with open(file_path, "rb") as f_retry:
+                        encoder_params = pkl.load(f_retry)
+                except Exception as download_error:
+                    print(f"Failed to re-download: {download_error}")
+                    raise
+            else:
+                raise
+        finally:
+            # Restore original functions
+            jax_array._reconstruct_array = original_reconstruct
+            jax_core.ShapedArray.update = original_shaped_array_update
 
-    param_count = sum(x.size for x in jax.tree_leaves(encoder_params))
+    param_count = sum(x.size for x in jax.tree.leaves(encoder_params))
     print(
         f"Loaded {param_count/1e6}M parameters from ResNet-10 pretrained on ImageNet-1K"
     )

@@ -47,6 +47,7 @@ flags.DEFINE_integer("eval_checkpoint_step", 0, "Step to evaluate the checkpoint
 flags.DEFINE_integer("eval_n_trajs", 0, "Number of trajectories to evaluate.")
 flags.DEFINE_boolean("save_video", False, "Save video.")
 flags.DEFINE_boolean("use_sim", False, "Use Isaac Sim simulation environment for actor (if --actor is set).")
+flags.DEFINE_string("isaac_server_url", None, "Isaac Sim server URL (e.g., http://192.168.1.100:5001/). If not set, uses SERVER_URL from config.")
 
 flags.DEFINE_boolean(
     "debug", False, "Debug mode."
@@ -55,7 +56,14 @@ flags.DEFINE_boolean(
 
 devices = jax.local_devices()
 num_devices = len(devices)
-sharding = jax.sharding.PositionalSharding(devices)
+# JAX 0.9.0+ removed PositionalSharding, use NamedSharding instead
+if num_devices == 1:
+    sharding = jax.sharding.SingleDeviceSharding(devices[0])
+else:
+    # For multiple devices, use NamedSharding with a mesh
+    from jax.sharding import Mesh, NamedSharding, PartitionSpec
+    mesh = Mesh(devices, axis_names=('devices',))
+    sharding = NamedSharding(mesh, PartitionSpec('devices'))
 
 
 def print_green(x):
@@ -129,10 +137,17 @@ def actor(agent, data_store, intvn_data_store, env, sampling_rng):
         wait_for_server=True,
         timeout_ms=3000,
     )
+    print_green(f"[ACTOR] TrainerClient connected to Learner at {FLAGS.ip}")
 
     # Function to update the agent with new params
     def update_params(params):
         nonlocal agent
+        # 只在每1000次更新时打印一次，减少日志输出
+        if not hasattr(update_params, '_update_count'):
+            update_params._update_count = 0
+        update_params._update_count += 1
+        if update_params._update_count % 100 == 0:
+            print_green(f"[ACTOR] Received network parameters update #{update_params._update_count}!")
         agent = agent.replace(state=agent.state.replace(params=params))
 
     client.recv_network_callback(update_params)
@@ -151,12 +166,33 @@ def actor(agent, data_store, intvn_data_store, env, sampling_rng):
     intervention_steps = 0
 
     pbar = tqdm.tqdm(range(start_step, config.max_steps), dynamic_ncols=True)
+    
+    # 动态调整MAX_EPISODE_LENGTH
+    # 训练前期使用较短的episode长度，加快数据收集
+    # 使用 unwrapped 访问底层环境，避免 Gymnasium 弃用警告
+    base_env = env.unwrapped
+    if hasattr(config, 'early_max_episode_length') and hasattr(config, 'early_training_steps'):
+        if hasattr(base_env, 'set_max_episode_length'):
+            # 在训练开始时设置较短的episode长度
+            if start_step < config.early_training_steps:
+                base_env.set_max_episode_length(config.early_max_episode_length)
+    
     for step in pbar:
         timer.tick("total")
+        
+        # 动态调整MAX_EPISODE_LENGTH：超过阈值后恢复为原始值
+        if hasattr(config, 'early_max_episode_length') and hasattr(config, 'early_training_steps'):
+            if hasattr(base_env, 'set_max_episode_length'):
+                if step == config.early_training_steps:
+                    # 恢复为原始值（从config中获取）
+                    original_length = base_env._original_max_episode_length if hasattr(base_env, '_original_max_episode_length') else 1800
+                    base_env.set_max_episode_length(original_length)
 
         with timer.context("sample_actions"):
             if step < config.random_steps:
                 actions = env.action_space.sample()
+                if step == 0 or step % 100 == 0:
+                    print(f"[ACTOR] Step {step}: Using random actions (random_steps={config.random_steps})")
             else:
                 sampling_rng, key = jax.random.split(sampling_rng)
                 actions = agent.sample_actions(
@@ -165,6 +201,9 @@ def actor(agent, data_store, intvn_data_store, env, sampling_rng):
                     argmax=False,
                 )
                 actions = np.asarray(jax.device_get(actions))
+                # 减少日志输出频率：每5000步打印一次
+                if step == config.random_steps or (step > config.random_steps and step % 5000 == 0):
+                    print(f"[ACTOR] Step {step}: Using policy network (action norm: {np.linalg.norm(actions):.4f})")
 
         # Step environment
         with timer.context("step_env"):
@@ -204,10 +243,28 @@ def actor(agent, data_store, intvn_data_store, env, sampling_rng):
                 intvn_data_store.insert(transition)
                 demo_transitions.append(copy.deepcopy(transition))
 
+            # 定期发送数据到Learner（每N步或每个episode结束时）
+            # 如果只在episode结束时发送，长episode会导致数据堆积
+            if step % 10 == 0:  # 每10步发送一次，确保数据及时传输
+                client.update()
+                # 减少日志输出频率：每5000步打印一次
+                if step % 5000 == 0:
+                    print(f"[ACTOR] Sent data to Learner at step {step} (queue size: {len(data_store)})")
+
             obs = next_obs
             if effective_done:
-                info["episode"]["intervention_count"] = intervention_count
-                info["episode"]["intervention_steps"] = intervention_steps
+                # [FIX] 检查 info 中是否有 "episode" 键
+                # RecordEpisodeStatistics 只在 done 或 truncated 为 True 时添加 "episode" 键
+                # 如果用户手动重置场景（user_reset_scene），可能没有 "episode" 键
+                if "episode" in info:
+                    info["episode"]["intervention_count"] = intervention_count
+                    info["episode"]["intervention_steps"] = intervention_steps
+                else:
+                    # 如果没有 "episode" 键，创建一个（用于统计）
+                    info["episode"] = {
+                        "intervention_count": intervention_count,
+                        "intervention_steps": intervention_steps,
+                    }
                 stats = {"environment": info}  # send stats to the learner to log
                 client.request("send-stats", stats)
                 pbar.set_description(f"last return: {running_return}")
@@ -249,12 +306,11 @@ def learner(rng, agent, replay_buffer, demo_buffer, wandb_logger=None):
     """
     The learner loop, which runs when "--learner" is set to True.
     """
-    start_step = (
-        int(os.path.basename(checkpoints.latest_checkpoint(os.path.abspath(FLAGS.checkpoint_path)))[11:])
-        + 1
-        if FLAGS.checkpoint_path and os.path.exists(FLAGS.checkpoint_path)
-        else 0
-    )
+    start_step = 0
+    if FLAGS.checkpoint_path and os.path.exists(FLAGS.checkpoint_path):
+        latest_ckpt = checkpoints.latest_checkpoint(os.path.abspath(FLAGS.checkpoint_path))
+        if latest_ckpt is not None:
+            start_step = int(os.path.basename(latest_ckpt)[11:]) + 1
     step = start_step
 
     def stats_callback(type: str, payload: dict) -> dict:
@@ -294,14 +350,14 @@ def learner(rng, agent, replay_buffer, demo_buffer, wandb_logger=None):
             "batch_size": config.batch_size // 2,
             "pack_obs_and_next_obs": True,
         },
-        device=sharding.replicate(),
+        device=sharding,
     )
     demo_iterator = demo_buffer.get_iterator(
         sample_args={
             "batch_size": config.batch_size // 2,
             "pack_obs_and_next_obs": True,
         },
-        device=sharding.replicate(),
+        device=sharding,
     )
 
     # wait till the replay buffer is filled with enough data
@@ -343,6 +399,9 @@ def learner(rng, agent, replay_buffer, demo_buffer, wandb_logger=None):
         if step > 0 and step % (config.steps_per_update) == 0:
             agent = jax.block_until_ready(agent)
             server.publish_network(agent.state.params)
+            # 减少日志输出频率：每1000步打印一次
+            if step % 1000 == 0:
+                print_green(f"[LEARNER] Publishing network parameters at step {step}")
 
         if step % config.log_period == 0 and wandb_logger:
             wandb_logger.log(update_info, step=step)
@@ -364,6 +423,11 @@ def learner(rng, agent, replay_buffer, demo_buffer, wandb_logger=None):
 def main(_):
     global config
     config = CONFIG_MAPPING[FLAGS.exp_name]()
+    
+    # 打印JAX设备信息（用于确认GPU是否可用）
+    print_green(f"JAX devices: {jax.devices()}")
+    print_green(f"JAX platform: {jax.devices()[0].platform if jax.devices() else 'No devices'}")
+    print_green(f"Number of devices: {num_devices}")
 
     assert config.batch_size % num_devices == 0
     # seed
@@ -376,10 +440,14 @@ def main(_):
     # - 如果是 Learner 节点，使用仿真环境（用于获取 observation_space 等信息）
     # - 否则使用真实环境
     use_fake_env = FLAGS.use_sim if FLAGS.actor else FLAGS.learner
+    # [FIX] Learner 只需要空间定义，不需要连接服务器
+    skip_server_connection = FLAGS.learner  # Learner 跳过服务器连接
     env = config.get_environment(
         fake_env=use_fake_env,
         save_video=FLAGS.save_video,
         classifier=not use_fake_env, # [FIX] Use Logic Reward for Sim, Classifier for Real
+        isaac_server_url=FLAGS.isaac_server_url,  # 传递 Isaac Sim 服务器 URL（如果提供）
+        skip_server_connection=skip_server_connection,  # Learner 跳过服务器连接
     )
     env = RecordEpisodeStatistics(env)
 
@@ -420,21 +488,24 @@ def main(_):
 
     # replicate agent across devices
     # need the jnp.array to avoid a bug where device_put doesn't recognize primitives
+    # JAX 0.8+ doesn't have sharding.replicate(), use device_put with sharding directly
     agent = jax.device_put(
-        jax.tree_map(jnp.array, agent), sharding.replicate()
+        jax.tree.map(jnp.array, agent), sharding
     )
 
     if FLAGS.checkpoint_path is not None and os.path.exists(FLAGS.checkpoint_path):
-        input("Checkpoint path already exists. Press Enter to resume training.")
-        ckpt = checkpoints.restore_checkpoint(
-            os.path.abspath(FLAGS.checkpoint_path),
-            agent.state,
-        )
-        agent = agent.replace(state=ckpt)
-        ckpt_number = os.path.basename(
-            checkpoints.latest_checkpoint(os.path.abspath(FLAGS.checkpoint_path))
-        )[11:]
-        print_green(f"Loaded previous checkpoint at step {ckpt_number}.")
+        latest_ckpt = checkpoints.latest_checkpoint(os.path.abspath(FLAGS.checkpoint_path))
+        if latest_ckpt is not None:
+            input("Checkpoint path already exists. Press Enter to resume training.")
+            ckpt = checkpoints.restore_checkpoint(
+                os.path.abspath(FLAGS.checkpoint_path),
+                agent.state,
+            )
+            agent = agent.replace(state=ckpt)
+            ckpt_number = os.path.basename(latest_ckpt)[11:]
+            print_green(f"Loaded previous checkpoint at step {ckpt_number}.")
+        else:
+            print("[INFO] Checkpoint directory exists but no checkpoint files found. Starting fresh training.")
 
     def create_replay_buffer_and_wandb_logger():
         replay_buffer = MemoryEfficientReplayBufferDataStore(
@@ -453,7 +524,7 @@ def main(_):
         return replay_buffer, wandb_logger
 
     if FLAGS.learner:
-        sampling_rng = jax.device_put(sampling_rng, device=sharding.replicate())
+        sampling_rng = jax.device_put(sampling_rng, device=sharding)
         replay_buffer, wandb_logger = create_replay_buffer_and_wandb_logger()
         demo_buffer = MemoryEfficientReplayBufferDataStore(
             env.observation_space,
@@ -511,7 +582,7 @@ def main(_):
         )
 
     elif FLAGS.actor:
-        sampling_rng = jax.device_put(sampling_rng, sharding.replicate())
+        sampling_rng = jax.device_put(sampling_rng, sharding)
         data_store = QueuedDataStore(50000)  # the queue size on the actor
         intvn_data_store = QueuedDataStore(50000)
 

@@ -304,8 +304,17 @@ class GamepadIntervention(gym.ActionWrapper):
         
         # Gripper state initialization
         # Mark as uninitialized to sync with env on first action
-        self.gripper_val = 0.0 
+        self.gripper_val = None  # Will be initialized when A/B button is first pressed
         self.gripper_initialized = False
+        
+        # Arm latch state initialization
+        # When gamepad has input, arm_latched = True
+        # When gamepad has no input but arm_latched = True, use zero action to maintain position
+        # Press X button to release arm_latched and return control to policy
+        self.arm_latched = False
+        self.last_arm_action = np.zeros(6)  # Save last arm action
+        self._x_button_pressed = False  # For edge trigger detection
+        
         self.action_indices = action_indices
     
     def action(self, action: np.ndarray) -> Tuple[np.ndarray, bool]:
@@ -344,11 +353,32 @@ class GamepadIntervention(gym.ActionWrapper):
             # Y 键释放，重置标志
             self._y_button_pressed = False
         
-        # Check if there's any gamepad input
-        if np.linalg.norm(expert_a) > 0.001:
+        # Check if there's any gamepad input (arm part, first 6 dimensions)
+        arm_input = expert_a[:6]
+        has_arm_input = np.linalg.norm(arm_input) > 0.001
+        
+        # If gamepad has arm input, activate latch and save action
+        if has_arm_input:
+            self.arm_latched = True
+            self.last_arm_action = arm_input.copy()
             intervened = True
         
+        # Handle X button (edge trigger) - Release all latches
+        if self.x_button and not self._x_button_pressed:
+            self._x_button_pressed = True
+            # Release all latches (arm and gripper)
+            if self.arm_latched or getattr(self, 'gripper_latched', False):
+                print("[INFO] Gamepad: All Latches RELEASED (AI Resume Control)")
+            self.arm_latched = False
+            if hasattr(self, 'gripper_latched'):
+                self.gripper_latched = False
+        elif not self.x_button:
+            self._x_button_pressed = False
+        
         # Handle gripper control
+        gripper_intervened = False
+        env_gripper_val = None
+        
         if self.gripper_enabled:
             # [FIX] First Run Initialization: Sync with current env state
             if not self.gripper_initialized:
@@ -359,37 +389,87 @@ class GamepadIntervention(gym.ActionWrapper):
                          # Use raw [0, 1] directly
                          self.gripper_val = float(base_env.curr_gripper_pos[0])
                     else:
-                         self.gripper_val = 1.0 
+                         # If cannot get current state, use policy's gripper value (don't force a value)
+                         self.gripper_val = None  # Mark as uninitialized
                 except Exception as e:
-                    self.gripper_val = 1.0
+                    self.gripper_val = None  # Mark as uninitialized
                 self.gripper_initialized = True
 
             # Step size for incremental control (adjust for speed)
             step_size = 0.05
             
-            # Check for button presses
+            # Check for button presses - ONLY when buttons are pressed, use gamepad gripper control
             if self.left:  # A button: Close
+                # Initialize gripper_val if not set
+                if self.gripper_val is None:
+                    try:
+                        base_env = self.env.unwrapped
+                        if hasattr(base_env, 'curr_gripper_pos') and base_env.curr_gripper_pos is not None:
+                            self.gripper_val = float(base_env.curr_gripper_pos[0])
+                        else:
+                            self.gripper_val = 0.5  # Default to middle position
+                    except:
+                        self.gripper_val = 0.5
                 self.gripper_val = max(0.0, self.gripper_val - step_size) # Clamp to 0.0
+                gripper_intervened = True
                 intervened = True
                 self.gripper_latched = True # [NEW] Latch gripper control
             elif self.right:  # B button: Open
+                # Initialize gripper_val if not set
+                if self.gripper_val is None:
+                    try:
+                        base_env = self.env.unwrapped
+                        if hasattr(base_env, 'curr_gripper_pos') and base_env.curr_gripper_pos is not None:
+                            self.gripper_val = float(base_env.curr_gripper_pos[0])
+                        else:
+                            self.gripper_val = 0.5  # Default to middle position
+                    except:
+                        self.gripper_val = 0.5
                 self.gripper_val = min(1.0, self.gripper_val + step_size) # Clamp to 1.0
+                gripper_intervened = True
                 intervened = True
                 self.gripper_latched = True # [NEW] Latch gripper control
             
-            # [NEW] Check for X button (Release Latch)
-            if self.x_button:
-                if getattr(self, 'gripper_latched', False):
-                     print("[INFO] Gamepad: Gripper Latch RELEASED (AI Resume)")
-                self.gripper_latched = False
+            # X button handling moved to above (before gripper control)
+            # It now releases both arm_latched and gripper_latched
 
-            
-            # Action Mapping: [0, 1] (User/Logic) -> [-1, 1] (Env/Policy Standard)
-            env_gripper_val = self.gripper_val * 2.0 - 1.0
-            
-            # Construction of Gamepad Action (7-DOF)
-            # If intervened (Arm moved OR Buttons pressed), we use Gamepad Action
-            expert_a = np.concatenate((expert_a, [env_gripper_val]), axis=0)
+            # ONLY if gripper was intervened (A/B button pressed), use gamepad gripper value
+            # Otherwise, preserve current gripper state from environment (especially when arm is moved)
+            if gripper_intervened and self.gripper_val is not None:
+                # Action Mapping: [0, 1] (User/Logic) -> [-1, 1] (Env/Policy Standard)
+                env_gripper_val = self.gripper_val * 2.0 - 1.0
+                # Construction of Gamepad Action (7-DOF)
+                expert_a = np.concatenate((expert_a, [env_gripper_val]), axis=0)
+            else:
+                # [FIX] When arm is moved but gripper is not intervened, preserve current gripper state
+                # This prevents gripper from being reset to 0 (half-open) when only joystick is moved
+                if self.arm_latched:
+                    # Arm is being controlled, preserve current gripper state from environment
+                    try:
+                        base_env = self.env.unwrapped
+                        if hasattr(base_env, 'curr_gripper_pos') and base_env.curr_gripper_pos is not None:
+                            gripper_pos = float(base_env.curr_gripper_pos[0])  # [0, 1] range
+                            env_gripper_val = gripper_pos * 2.0 - 1.0  # Map to [-1, 1]
+                            expert_a = np.concatenate((expert_a, [env_gripper_val]), axis=0)
+                        else:
+                            # Fallback: use policy's gripper action if cannot get env state
+                            if len(action) >= 7:
+                                expert_a = np.concatenate((expert_a, [action[6]]), axis=0)
+                            else:
+                                expert_a = np.concatenate((expert_a, [1.0]), axis=0)
+                    except:
+                        # Fallback: use policy's gripper action if exception occurs
+                        if len(action) >= 7:
+                            expert_a = np.concatenate((expert_a, [action[6]]), axis=0)
+                        else:
+                            expert_a = np.concatenate((expert_a, [1.0]), axis=0)
+                else:
+                    # No arm input, use policy's gripper action (from action parameter)
+                    if len(action) >= 7:
+                        expert_a = np.concatenate((expert_a, [action[6]]), axis=0)
+                    else:
+                        # If action doesn't have gripper, use default (open)
+                        expert_a = np.concatenate((expert_a, [1.0]), axis=0)
         
         # Filter action indices if specified
         if self.action_indices is not None:
@@ -402,18 +482,39 @@ class GamepadIntervention(gym.ActionWrapper):
         if intervened:
             return expert_a, True
         
-        # If Gamepad is Idle (Sticks zero, Buttons up), we fall back to Policy Action
-        # BUT, if we have "Latched" the gripper (user previously touched it),
-        # we must OVERRIDE the Policy's gripper command to prevent "Snap Back".
-        if getattr(self, 'gripper_latched', False):
+        # If Gamepad is Idle (Sticks zero, Buttons up), check for latched states
+        # If arm or gripper is latched, maintain the last state instead of using policy action
+        if self.arm_latched or getattr(self, 'gripper_latched', False):
             # Create a copy to avoid modifying original policy action in place (if it's reused)
             final_action = action.copy()
-            # Override gripper channel (Index 6)
-            # Ensure action shape is correct
-            if len(final_action) >= 7:
-                 final_action[6] = env_gripper_val
-            return final_action, False
+            
+            # If arm is latched, use zero action to maintain current position
+            # (or use last_arm_action if you want to continue last movement)
+            if self.arm_latched:
+                if len(final_action) >= 6:
+                    final_action[:6] = np.zeros(6)  # Use zero action to maintain position
+            
+            # If gripper is latched, use saved gripper value
+            if getattr(self, 'gripper_latched', False) and self.gripper_val is not None:
+                if len(final_action) >= 7:
+                    env_gripper_val = self.gripper_val * 2.0 - 1.0
+                    final_action[6] = env_gripper_val
+            elif self.arm_latched:
+                # [FIX] If arm is latched but gripper is not, get current gripper state from env
+                # This ensures gripper state is preserved when recording demos
+                try:
+                    base_env = self.env.unwrapped
+                    if hasattr(base_env, 'curr_gripper_pos') and base_env.curr_gripper_pos is not None:
+                        gripper_pos = float(base_env.curr_gripper_pos[0])  # [0, 1] range
+                        final_action[6] = gripper_pos * 2.0 - 1.0  # Map to [-1, 1]
+                except:
+                    pass  # If cannot get, keep policy action (zero)
+            
+            # [FIX] Return replaced=True so that intervene_action is set in step()
+            # This ensures the action is recorded in demo data collection
+            return final_action, True
         
+        # All latches released, use policy action
         return action, False
     
     def step(self, action):

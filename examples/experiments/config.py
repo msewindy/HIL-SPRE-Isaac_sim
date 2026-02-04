@@ -38,7 +38,19 @@ class DefaultTrainingConfig:
     setup_mode: str = "single-arm-fixed-gripper"
 
     @abstractmethod
-    def get_environment(self, fake_env=False, save_video=False, classifier=False):
+    def get_environment(self, fake_env=False, save_video=False, classifier=False, isaac_server_url=None):
+        """
+        获取环境实例
+        
+        Args:
+            fake_env: True 使用仿真环境，False 使用真实环境
+            save_video: 是否保存视频
+            classifier: 是否使用奖励分类器
+            isaac_server_url: Isaac Sim 服务器 URL（可选，仅用于仿真环境）
+        
+        Returns:
+            env: Gym 环境实例
+        """
         raise NotImplementedError
     
     @abstractmethod

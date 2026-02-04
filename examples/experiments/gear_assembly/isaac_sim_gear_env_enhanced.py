@@ -37,7 +37,7 @@ class IsaacSimGearAssemblyEnvEnhanced(IsaacSimFrankaEnv):
     由 isaac_sim_server 加载，而不是在代码中创建。
     """
     
-    def __init__(self, enable_domain_randomization: bool = False, **kwargs):
+    def __init__(self, enable_domain_randomization: bool = False, skip_server_connection: bool = False, **kwargs):
         """
         初始化 Gear 组装任务环境
         
@@ -60,8 +60,21 @@ class IsaacSimGearAssemblyEnvEnhanced(IsaacSimFrankaEnv):
         # Gear 与夹爪的约束状态
         self.gear_grasp_constraint = None
 
+        # 成功持续状态跟踪（用于持续状态判断）
+        # 需要连续成功保持2秒以上才判定为最终成功
+        self.success_hold_duration_sec = 2.0  # 需要保持2秒
+        self.success_hold_steps = None  # 将在初始化后根据控制频率计算
+        self.consecutive_success_steps = 0  # 当前连续成功的步数
+        self.success_confirmed = False  # 是否已确认成功（达到持续要求）
+
         # 调用基类初始化
-        super().__init__(**kwargs)
+        super().__init__(skip_server_connection=skip_server_connection, **kwargs)
+        
+        # 根据控制频率计算需要连续成功的步数
+        # 默认 hz=10，即每步0.1秒，2秒需要20步
+        if self.success_hold_steps is None:
+            self.success_hold_steps = int(self.success_hold_duration_sec * self.hz)
+            print(f"[INFO] Success hold requirement: {self.success_hold_steps} steps ({self.success_hold_duration_sec}s at {self.hz}Hz)")
         
         # 设置键盘监听（F1 键触发重新抓取）
         def on_press(key):
@@ -141,11 +154,16 @@ class IsaacSimGearAssemblyEnvEnhanced(IsaacSimFrankaEnv):
         # Since we just moved to reset (using go_to_reset), we should anchor the control loop here.
         # Note: go_to_reset uses _get_reset_pose internally.
         self.last_commanded_pose = self._get_reset_pose()
-        print(f"[DEBUG-RESET] Config Pose: {self.config.RESET_POSE}")
-        print(f"[DEBUG-RESET] Calculated Reset Pose: {np.round(self.last_commanded_pose, 3)}")
+        # DEBUG日志已关闭，如需调试请取消注释
+        # print(f"[DEBUG-RESET] Config Pose: {self.config.RESET_POSE}")
+        # print(f"[DEBUG-RESET] Calculated Reset Pose: {np.round(self.last_commanded_pose, 3)}")
         
         # 重置路径长度
         self.curr_path_length = 0
+        
+        # [CRITICAL] 重置成功持续状态（确保不影响下一轮）
+        self.consecutive_success_steps = 0
+        self.success_confirmed = False
         
         # [MODIFIED] Explicitly trigger server-side scene reset to apply domain randomization
         print("[INFO] GearEnv: Triggering Server Scene Reset (Randomized)...")
@@ -223,7 +241,8 @@ class IsaacSimGearAssemblyEnvEnhanced(IsaacSimFrankaEnv):
         
         # 8. 移动到重置位置
         reset_pose = self._get_reset_pose()
-        print(f"[VERIFY] Client Reset Pose: {np.round(reset_pose, 4)}")
+        # DEBUG日志已关闭，如需调试请取消注释
+        # print(f"[VERIFY] Client Reset Pose: {np.round(reset_pose, 4)}")
         self._send_pos_command(reset_pose)
         time.sleep(0.5)
     
@@ -336,11 +355,12 @@ class IsaacSimGearAssemblyEnvEnhanced(IsaacSimFrankaEnv):
             else:
                  self._rt_debug_counter = 0
             
-            if self._rt_debug_counter % 60 == 0:
-                 has_states = hasattr(self, "object_states") and bool(self.object_states)
-                 print(f"[REWARD-DEBUG] Step {self._rt_debug_counter}: HasStates={has_states}")
-                 if has_states:
-                     print(f" -> Keys: {list(self.object_states.keys())}")
+            # DEBUG日志已关闭，如需调试请取消注释
+            # if self._rt_debug_counter % 60 == 0:
+            #      has_states = hasattr(self, "object_states") and bool(self.object_states)
+            #      print(f"[REWARD-DEBUG] Step {self._rt_debug_counter}: HasStates={has_states}")
+            #      if has_states:
+            #          print(f" -> Keys: {list(self.object_states.keys())}")
             
             if hasattr(self, "object_states") and self.object_states:
                 gear_state = self.object_states.get("gear_medium")
@@ -402,18 +422,39 @@ class IsaacSimGearAssemblyEnvEnhanced(IsaacSimFrankaEnv):
                     # 4. Check Z Insertion
                     insertion_ok = gear_pos[2] < 0.402
                     
-                    success = alignment_ok and centering_ok and insertion_ok
+                    # 检查当前步是否满足所有成功条件
+                    current_step_success = alignment_ok and centering_ok and insertion_ok
                     
-                    if success:
-                        print(f"\n[REWARD-SUCCESS] Reward Triggered!")
-                        print(f"  -> Gear Z-Height: {gear_pos[2]:.4f} (Thresh: < 0.402)")
-                        print(f"  -> Z-Alignment: {dot_z:.4f} (Thresh: > 0.996)")
-                        print(f"  -> Hole in Base Frame: {hole_in_base_frame} (Target: [0.02, 0, 0])")
-                        print(f"  -> Errors: X_err={x_error:.4f}, Y_err={y_error:.4f} (Thresh: 0.002)")
-                        print(f"  -> Raw Gear Pos: {gear_pos}")
-                        print(f"  -> Raw Base Pos: {base_pos}")
-                        return 1.0
-                    return 0.0
+                    # [持续状态判断] 跟踪连续成功的步数
+                    if current_step_success:
+                        self.consecutive_success_steps += 1
+                        
+                        # 检查是否达到持续成功要求（2秒 = success_hold_steps 步）
+                        if self.consecutive_success_steps >= self.success_hold_steps:
+                            # 首次达到持续要求时，确认成功并返回奖励
+                            if not self.success_confirmed:
+                                self.success_confirmed = True
+                                print(f"\n[REWARD-SUCCESS] Success Confirmed (Held for {self.consecutive_success_steps} steps / {self.consecutive_success_steps / self.hz:.2f}s)!")
+                            print(f"  -> Gear Z-Height: {gear_pos[2]:.4f} (Thresh: < 0.402)")
+                            print(f"  -> Z-Alignment: {dot_z:.4f} (Thresh: > 0.996)")
+                            print(f"  -> Hole in Base Frame: {hole_in_base_frame} (Target: [0.02, 0, 0])")
+                            print(f"  -> Errors: X_err={x_error:.4f}, Y_err={y_error:.4f} (Thresh: 0.002)")
+                            print(f"  -> Raw Gear Pos: {gear_pos}")
+                            print(f"  -> Raw Base Pos: {base_pos}")
+                            return 1.0
+                        else:
+                            # 正在累积成功步数，但尚未达到要求
+                            # 可选：打印进度信息（每10步打印一次，避免刷屏）
+                            if self.consecutive_success_steps % 10 == 0:
+                                print(f"[REWARD-PROGRESS] Success holding: {self.consecutive_success_steps}/{self.success_hold_steps} steps ({self.consecutive_success_steps / self.hz:.2f}s / {self.success_hold_duration_sec:.2f}s)")
+                            return 0.0
+                    else:
+                        # 当前步不满足成功条件，重置连续成功计数
+                        if self.consecutive_success_steps > 0:
+                            print(f"[REWARD-RESET] Success condition lost. Reset counter from {self.consecutive_success_steps} steps.")
+                        self.consecutive_success_steps = 0
+                        self.success_confirmed = False
+                        return 0.0
                     
         except Exception as e:
             # print(f"[WARNING] GT Reward calculation failed: {e}")

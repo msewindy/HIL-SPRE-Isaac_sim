@@ -22,7 +22,8 @@ def make_bc_agent(
     sample_obs, 
     sample_action, 
     image_keys=("image",), 
-    encoder_type="resnet-pretrained"
+    encoder_type="resnet-pretrained",
+    mse_weight=0.1,  # Weight for weighted MSE loss in total loss
 ):
     return BCAgent.create(
         jax.random.PRNGKey(seed),
@@ -38,12 +39,14 @@ def make_bc_agent(
             "tanh_squash_distribution": False,
             "std_parameterization": "exp",
             "std_min": 1e-5,
-            "std_max": 5,
+            "std_max": 0.5,  # [IMPROVED] Reduced from 5 to 0.5 to prevent overly wide distributions
+            # A narrower distribution ensures the mode (mean) is closer to demonstration actions
         },
         use_proprio=True,
         encoder_type=encoder_type,
         image_keys=image_keys,
         augmentation_function=make_batch_augmentation_func(image_keys),
+        mse_weight=mse_weight,  # Pass mse_weight to config
     )
 
 

@@ -156,7 +156,7 @@ class IsaacSimEnvConfig(DefaultEnvConfig):
     
     # 其他配置
     DISPLAY_IMAGE = True
-    MAX_EPISODE_LENGTH = 4800
+    MAX_EPISODE_LENGTH = 1800
     
     # 为了兼容性，定义空字典或默认值（如果基类需要）
     COMPLIANCE_PARAM: Dict[str, float] = {}
@@ -181,8 +181,14 @@ class TrainConfig(DefaultTrainingConfig):
     steps_per_update = 50
     encoder_type = "resnet-pretrained"
     setup_mode = "single-arm-continuous-gripper"
+    
+    # 动态MAX_EPISODE_LENGTH配置
+    # 训练前期使用较短的episode长度，加快数据收集
+    # 演示数据统计：最短590步，最长1254步，平均830步
+    early_max_episode_length: int = 800  # 前期使用的较短长度（应大于演示数据平均长度，留有余量，足够完成人工干预示范）
+    early_training_steps: int = 10000  # 前期训练步数阈值，超过后恢复为原始值（1800）
 
-    def get_environment(self, fake_env=False, save_video=False, classifier=False):
+    def get_environment(self, fake_env=False, save_video=False, classifier=False, isaac_server_url=None, skip_server_connection=False):
         """
         获取环境实例
         
@@ -190,6 +196,7 @@ class TrainConfig(DefaultTrainingConfig):
             fake_env: True 使用 Isaac Sim 仿真环境，False 使用真实环境
             save_video: 是否保存视频
             classifier: 是否使用奖励分类器
+            isaac_server_url: Isaac Sim 服务器 URL（可选，覆盖 config 中的 SERVER_URL）
         
         Returns:
             env: Gym 环境实例
@@ -199,11 +206,22 @@ class TrainConfig(DefaultTrainingConfig):
             # 使用 Isaac Sim 仿真环境
             try:
                 from experiments.gear_assembly.isaac_sim_gear_env_enhanced import IsaacSimGearAssemblyEnvEnhanced
+                # 创建配置实例
+                isaac_config = IsaacSimEnvConfig()
+                # 如果提供了命令行参数，覆盖配置中的 SERVER_URL
+                if isaac_server_url is not None:
+                    isaac_config.SERVER_URL = isaac_server_url
+                    if not isaac_config.SERVER_URL.endswith('/'):
+                        isaac_config.SERVER_URL += '/'
+                    print(f"[INFO] Using Isaac Sim server URL from command line: {isaac_config.SERVER_URL}")
+                else:
+                    print(f"[INFO] Using Isaac Sim server URL from config: {isaac_config.SERVER_URL}")
                 env = IsaacSimGearAssemblyEnvEnhanced(
                     fake_env=True,  # 始终为 True（仿真环境）
                     save_video=save_video,
-                    config=IsaacSimEnvConfig(),
+                    config=isaac_config,
                     enable_domain_randomization=False,  # 域随机化已关闭（根据项目需求）
+                    skip_server_connection=skip_server_connection,  # Learner 跳过服务器连接
                 )
             except ImportError as e:
                 raise ImportError(

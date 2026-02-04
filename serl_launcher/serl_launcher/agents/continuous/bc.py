@@ -58,12 +58,38 @@ class BCAgent(flax.struct.PyTreeNode):
             else:
                 batch_actions = batch["actions"]
             log_probs = dist.log_prob(batch_actions)
+            
+            # [IMPROVED] Normalized MSE Loss: Use relative error instead of absolute error
+            # This addresses the issue where MSE is insensitive to small action values
+            action_norms = jnp.linalg.norm(batch_actions, axis=-1)
+            
+            # Standard MSE (for logging)
             mse = ((pi_actions - batch_actions) ** 2).sum(-1)
+            
+            # Normalized MSE: divide by action norm (relative error)
+            # For non-zero actions, use normalized MSE (more sensitive to small values)
+            # For zero actions, use standard MSE (but with lower weight)
+            normalized_mse = mse / (action_norms + 1e-6)  # Avoid division by zero
+            
+            # Weight: non-zero actions use normalized MSE, zero actions use standard MSE with lower weight
+            weights = jnp.where(action_norms > 1e-6, 1.0, 0.1)  # Zero actions get lower weight
+            final_mse = jnp.where(action_norms > 1e-6, normalized_mse, mse) * weights
+            mse_loss = final_mse.mean()
+            
+            # Actor Loss (negative log probability)
             actor_loss = -(log_probs).mean()
+            
+            # [IMPROVED] Combine losses: Use normalized MSE as additional regularization
+            # The actor_loss is the main loss, mse_loss provides additional signal
+            # Weight can be adjusted (0.1 means mse_loss contributes 10% to total loss)
+            mse_weight = self.config.get("mse_weight", 0.1)
+            total_loss = actor_loss + mse_weight * mse_loss
 
-            return actor_loss, {
+            return total_loss, {
                 "actor_loss": actor_loss,
                 "mse": mse.mean(),
+                "normalized_mse": mse_loss,
+                "total_loss": total_loss,
             }
 
         # compute gradients and update params
@@ -146,6 +172,8 @@ class BCAgent(flax.struct.PyTreeNode):
         # Optimizer
         learning_rate: float = 3e-4,
         augmentation_function: Optional[callable] = None,
+        # Loss configuration
+        mse_weight: float = 0.1,  # Weight for weighted MSE loss in total loss
     ):
         if encoder_type == "resnet":
             from serl_launcher.vision.resnet_v1 import resnetv1_configs
@@ -218,6 +246,7 @@ class BCAgent(flax.struct.PyTreeNode):
             image_keys=image_keys,
             augmentation_function=augmentation_function,
             tanh_squash_distribution=policy_kwargs["tanh_squash_distribution"],
+            mse_weight=mse_weight,  # Weight for weighted MSE loss
         )
 
         agent = cls(state, config)

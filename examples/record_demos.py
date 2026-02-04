@@ -14,7 +14,8 @@ from experiments.mappings import CONFIG_MAPPING
 FLAGS = flags.FLAGS
 flags.DEFINE_string("exp_name", None, "Name of experiment corresponding to folder.")
 flags.DEFINE_integer("successes_needed", 20, "Number of successful demos to collect.")
-flags.DEFINE_float("success_sleep_sec", 2.0, "Seconds to wait after a success before reset (0 to disable). Was 10s, reduce to avoid long freeze.")
+flags.DEFINE_float("success_sleep_sec", 3.0, "Seconds to wait after a success before reset (0 to disable). Was 10s, reduce to avoid long freeze.")
+flags.DEFINE_integer("post_success_steps", 10, "Number of steps to continue recording after success is detected. This ensures the complete installation process is captured.")
 flags.DEFINE_boolean("fake_env", False, "Use Isaac Sim simulation environment.")
 
 def main(_):
@@ -80,6 +81,17 @@ def main(_):
             if "intervene_action" in info:
                 actions = info["intervene_action"]
                 # print(f"[DEBUG] Client Gamepad Action: {actions}")
+            else:
+                # [FIX] If no intervene_action, but we need to preserve gripper state
+                # Get current gripper state from environment to avoid recording 0 (half-open)
+                # when gripper should maintain its current state
+                try:
+                    base_env = env.unwrapped
+                    if hasattr(base_env, 'curr_gripper_pos') and base_env.curr_gripper_pos is not None:
+                        gripper_pos = float(base_env.curr_gripper_pos[0])  # [0, 1] range
+                        actions[6] = gripper_pos * 2.0 - 1.0  # Map to [-1, 1]
+                except:
+                    pass  # If cannot get, keep zero (will be recorded as half-open, which is not ideal but acceptable)
             transition = copy.deepcopy(
                 dict(
                     observations=obs,
@@ -96,14 +108,46 @@ def main(_):
             pbar.set_description(f"Return: {returns}")
 
             obs = next_obs
+            
+            # 检查是否成功（但可能还需要继续记录几个步骤）
+            if done and info.get("succeed", False):
+                # 成功判定后，继续记录几个步骤以确保记录完整的安装过程
+                # 这很重要，因为环境在reward>0时立即设置done=True，
+                # 但齿轮可能还没有完全安装到位或稳定
+                post_success_steps = FLAGS.post_success_steps
+                if post_success_steps > 0:
+                    print(f"[{datetime.datetime.now().strftime('%H:%M:%S.%f')[:-3]}] [DemoRecorder] [SUCCESS DETECTED] Task succeeded, continuing to record {post_success_steps} more steps...")
+                
+                for i in range(post_success_steps):
+                    # 继续执行零动作（保持当前状态）并记录
+                    actions = np.zeros(env.action_space.sample().shape)
+                    next_obs, rew, done, truncated, info = env.step(actions)
+                    
+                    transition = copy.deepcopy(
+                        dict(
+                            observations=obs,
+                            actions=actions,
+                            next_observations=next_obs,
+                            rewards=rew,
+                            masks=1.0 - done,
+                            dones=done,
+                            infos=info,
+                        )
+                    )
+                    trajectory.append(transition)
+                    returns += rew
+                    obs = next_obs
+                    
+                    # 如果环境再次设置done（如达到max_episode_length），提前结束
             if done:
-                if info["succeed"]:
-                    # 立即保存当前成功的轨迹到单独文件
+                        break
+                
+                # 保存完整的成功轨迹（包括成功后的步骤）
                     trajectory_copy = copy.deepcopy(trajectory)
                     single_traj_file = os.path.join(temp_dir, f"trajectory_{success_count:04d}.pkl")
                     with open(single_traj_file, "wb") as f:
                         pkl.dump(trajectory_copy, f)
-                    print(f"[{datetime.datetime.now().strftime('%H:%M:%S.%f')[:-3]}] [DemoRecorder] [SUCCESS #{success_count+1}/{success_needed}] Saved trajectory to {single_traj_file}")
+                print(f"[{datetime.datetime.now().strftime('%H:%M:%S.%f')[:-3]}] [DemoRecorder] [SUCCESS #{success_count+1}/{success_needed}] Saved trajectory ({len(trajectory_copy)} steps) to {single_traj_file}")
                     
                     success_count += 1
                     pbar.update(1)
@@ -111,9 +155,13 @@ def main(_):
                     if FLAGS.success_sleep_sec > 0:
                         print(f"[INFO] Success! Waiting {FLAGS.success_sleep_sec}s before reset (set --success_sleep_sec=0 to skip).")
                         time.sleep(FLAGS.success_sleep_sec)
-                else:
-                    print(f"[{datetime.datetime.now().strftime('%H:%M:%S.%f')[:-3]}] [DemoRecorder] [FAIL] Episode failed or timed out. Discarding trajectory.")
 
+                trajectory = []
+                returns = 0
+                obs, info = env.reset()
+            elif done:
+                # 失败或超时
+                print(f"[{datetime.datetime.now().strftime('%H:%M:%S.%f')[:-3]}] [DemoRecorder] [FAIL] Episode failed or timed out. Discarding trajectory.")
                 trajectory = []
                 returns = 0
                 obs, info = env.reset()
