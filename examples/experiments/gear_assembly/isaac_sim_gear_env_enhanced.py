@@ -427,6 +427,7 @@ class IsaacSimGearAssemblyEnvEnhanced(IsaacSimFrankaEnv):
                     
                     # [持续状态判断] 跟踪连续成功的步数
                     if current_step_success:
+                        return 1.0
                         self.consecutive_success_steps += 1
                         
                         # 检查是否达到持续成功要求（2秒 = success_hold_steps 步）
@@ -435,13 +436,13 @@ class IsaacSimGearAssemblyEnvEnhanced(IsaacSimFrankaEnv):
                             if not self.success_confirmed:
                                 self.success_confirmed = True
                                 print(f"\n[REWARD-SUCCESS] Success Confirmed (Held for {self.consecutive_success_steps} steps / {self.consecutive_success_steps / self.hz:.2f}s)!")
-                        print(f"  -> Gear Z-Height: {gear_pos[2]:.4f} (Thresh: < 0.402)")
-                        print(f"  -> Z-Alignment: {dot_z:.4f} (Thresh: > 0.996)")
-                        print(f"  -> Hole in Base Frame: {hole_in_base_frame} (Target: [0.02, 0, 0])")
-                        print(f"  -> Errors: X_err={x_error:.4f}, Y_err={y_error:.4f} (Thresh: 0.002)")
-                        print(f"  -> Raw Gear Pos: {gear_pos}")
-                        print(f"  -> Raw Base Pos: {base_pos}")
-                        return 1.0
+                            print(f"  -> Gear Z-Height: {gear_pos[2]:.4f} (Thresh: < 0.402)")
+                            print(f"  -> Z-Alignment: {dot_z:.4f} (Thresh: > 0.996)")
+                            print(f"  -> Hole in Base Frame: {hole_in_base_frame} (Target: [0.02, 0, 0])")
+                            print(f"  -> Errors: X_err={x_error:.4f}, Y_err={y_error:.4f} (Thresh: 0.002)")
+                            print(f"  -> Raw Gear Pos: {gear_pos}")
+                            print(f"  -> Raw Base Pos: {base_pos}")
+                            return 1.0
                         else:
                             # 正在累积成功步数，但尚未达到要求
                             # 可选：打印进度信息（每10步打印一次，避免刷屏）

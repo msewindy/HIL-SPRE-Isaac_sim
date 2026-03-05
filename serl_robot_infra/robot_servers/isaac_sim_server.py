@@ -1304,6 +1304,8 @@ class IsaacSimServer:
         current_width_normalized = 1.0 # Default Open
         width_m = 0.0 # Default closed/unknown
         q = self.franka.get_joint_positions()
+        if q is None:
+            return  # Physics not ready yet (e.g. during warmup), skip grasp logic
         if len(q) >= 9:
              # Panda fingers index 7, 8. Max width = 0.04+0.04 = 0.08
              width_m = q[7] + q[8]
@@ -1510,8 +1512,10 @@ class IsaacSimServer:
             
             # 2. Check Release Condition
             current_width_normalized = 1.0 # Default Open
-            width_m = 0.0 
+            width_m = 0.0
             q = self.franka.get_joint_positions()
+            if q is None:
+                return  # Physics not ready yet (e.g. during warmup), skip grasp logic
             if len(q) >= 9:
                 width_m = q[7] + q[8]
                 current_width_normalized = width_m / 0.08
@@ -1680,7 +1684,7 @@ class IsaacSimServer:
             self._push_images_to_websocket()
             
             # 这里简单处理，如果不够快可能会低于目标频率
-            # time.sleep(1.0 / self.sim_hz) 
+            time.sleep(1.0 / self.sim_hz) 
 
             # [DEBUG] 每秒打印一次机械臂位置
             current_time = time.time()

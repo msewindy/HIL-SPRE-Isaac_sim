@@ -116,45 +116,40 @@ def main(_):
                 # 但齿轮可能还没有完全安装到位或稳定
                 post_success_steps = FLAGS.post_success_steps
                 if post_success_steps > 0:
-                    print(f"[{datetime.datetime.now().strftime('%H:%M:%S.%f')[:-3]}] [DemoRecorder] [SUCCESS DETECTED] Task succeeded, continuing to record {post_success_steps} more steps...")
-                
-                for i in range(post_success_steps):
-                    # 继续执行零动作（保持当前状态）并记录
-                    actions = np.zeros(env.action_space.sample().shape)
-                    next_obs, rew, done, truncated, info = env.step(actions)
-                    
-                    transition = copy.deepcopy(
-                        dict(
-                            observations=obs,
-                            actions=actions,
-                            next_observations=next_obs,
-                            rewards=rew,
-                            masks=1.0 - done,
-                            dones=done,
-                            infos=info,
+                    print(f"[{datetime.datetime.now().strftime('%H:%M:%S.%f')[:-3]}] [DemoRecorder] [SUCCESS DETECTED] Task succeeded, appending {post_success_steps} synthetic post-success steps...")
+                    # 成功时 env 已返回 done=True，若再调用 step() 会继续返回 done=True，循环会立刻 break 只多 1 步。
+                    # 改为不调用 step()，用「成功瞬间的 obs」合成 N 条追加到轨迹。
+                    # 只有最后一条合成步设为 dones=True，否则分析/加载时会把每条 dones=True 当作新轨迹，导致 10 条「只有 1 帧」的轨迹。
+                    terminal_obs = copy.deepcopy(obs)
+                    zero_action = np.zeros(env.action_space.sample().shape)
+                    for i in range(post_success_steps):
+                        is_last = (i == post_success_steps - 1)
+                        transition = copy.deepcopy(
+                            dict(
+                                observations=terminal_obs,
+                                actions=zero_action,
+                                next_observations=terminal_obs,
+                                rewards=rew,
+                                masks=0.0,
+                                dones=done,
+                                infos={"succeed": True},
+                            )
                         )
-                    )
-                    trajectory.append(transition)
-                    returns += rew
-                    obs = next_obs
-                    
-                    # 如果环境再次设置done（如达到max_episode_length），提前结束
-            if done:
-                        break
+                        trajectory.append(transition)
                 
                 # 保存完整的成功轨迹（包括成功后的步骤）
-                    trajectory_copy = copy.deepcopy(trajectory)
-                    single_traj_file = os.path.join(temp_dir, f"trajectory_{success_count:04d}.pkl")
-                    with open(single_traj_file, "wb") as f:
-                        pkl.dump(trajectory_copy, f)
+                trajectory_copy = copy.deepcopy(trajectory)
+                single_traj_file = os.path.join(temp_dir, f"trajectory_{success_count:04d}.pkl")
+                with open(single_traj_file, "wb") as f:
+                    pkl.dump(trajectory_copy, f)
                 print(f"[{datetime.datetime.now().strftime('%H:%M:%S.%f')[:-3]}] [DemoRecorder] [SUCCESS #{success_count+1}/{success_needed}] Saved trajectory ({len(trajectory_copy)} steps) to {single_traj_file}")
-                    
-                    success_count += 1
-                    pbar.update(1)
-                    
-                    if FLAGS.success_sleep_sec > 0:
-                        print(f"[INFO] Success! Waiting {FLAGS.success_sleep_sec}s before reset (set --success_sleep_sec=0 to skip).")
-                        time.sleep(FLAGS.success_sleep_sec)
+                
+                success_count += 1
+                pbar.update(1)
+                
+                if FLAGS.success_sleep_sec > 0:
+                    print(f"[INFO] Success! Waiting {FLAGS.success_sleep_sec}s before reset (set --success_sleep_sec=0 to skip).")
+                    time.sleep(FLAGS.success_sleep_sec)
 
                 trajectory = []
                 returns = 0
