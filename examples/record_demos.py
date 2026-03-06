@@ -119,7 +119,9 @@ def main(_):
                     print(f"[{datetime.datetime.now().strftime('%H:%M:%S.%f')[:-3]}] [DemoRecorder] [SUCCESS DETECTED] Task succeeded, appending {post_success_steps} synthetic post-success steps...")
                     # 成功时 env 已返回 done=True，若再调用 step() 会继续返回 done=True，循环会立刻 break 只多 1 步。
                     # 改为不调用 step()，用「成功瞬间的 obs」合成 N 条追加到轨迹。
-                    # 只有最后一条合成步设为 dones=True，否则分析/加载时会把每条 dones=True 当作新轨迹，导致 10 条「只有 1 帧」的轨迹。
+                    # 只有最后一条合成步设为 dones=True，否则分析/加载时会把每条 dones=True 当作新轨迹。
+                    # 同时将已追加的真实 done 帧的 dones 改为 False，使轨迹连续
+                    trajectory[-1]['dones'] = False
                     terminal_obs = copy.deepcopy(obs)
                     zero_action = np.zeros(env.action_space.sample().shape)
                     for i in range(post_success_steps):
@@ -131,7 +133,7 @@ def main(_):
                                 next_observations=terminal_obs,
                                 rewards=rew,
                                 masks=0.0,
-                                dones=done,
+                                dones=is_last,
                                 infos={"succeed": True},
                             )
                         )

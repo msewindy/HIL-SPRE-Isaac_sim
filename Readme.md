@@ -14,6 +14,11 @@
 # 可选：--reset_randomize_gear=true/false 控制 reset scene 时是否随机化齿轮位置与底座角度（不传则用 config 中 RESET_RANDOMIZE_GEAR_AND_BASE）
 
 # 演示行为收集record demos运行
-python examples/record_demos.py --exp_name=gear_assembly --successes_needed=1 --fake_env
+python examples/record_demos.py --exp_name=gear_assembly --successes_needed=25 --fake_env
+
+
+python ./examples/analyze_demo_statistics.py /home/lingjingqiyuan/project/HIL-SPRE-Isaac_sim/demo_data/gear_assembly_25_demos_2026-03-06_10-44-01_filtered.pkl
+
+python ./examples/replay_demo_trajectory.py --demo_path=demo_data/gear_assembly_25_demos_2026-03-06_10-44-01_filtered.pkl --isaac_server_url=http://192.168.31.198:5001/
 
 

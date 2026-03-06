@@ -312,7 +312,7 @@ def analyze_demo_statistics(demo_path):
 
 def main():
     # 默认使用指定的文件
-    demo_path = "./demo_data/gear_assembly_1_demos_2026-02-05_09-51-00.pkl"
+    demo_path = "./demo_data/gear_assembly_20_demos_2026-03-05_14-53-23_fixed_filtered.pkl"
     
     # 如果提供了命令行参数，使用命令行参数
     if len(sys.argv) > 1:

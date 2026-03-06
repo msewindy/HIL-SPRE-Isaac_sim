@@ -158,11 +158,11 @@ python examples/train_rlpd.py \
 export XLA_PYTHON_CLIENT_PREALLOCATE=false
 export XLA_PYTHON_CLIENT_MEM_FRACTION=.8
 
-python examples/train_rlpd.py \
-    --exp_name=gear_assembly \
+python examples/train_rlpd_pretrain.py \
+    --exp_name=gear_assembly_pretrain \
     --learner \
-    --demo_path=./demo_data/gear_assembly_25_demos_2026-01-30_12-56-10.pkl \
-    --checkpoint_path=./checkpoints/gear_assembly_rlpd \
+    --demo_path=./demo_data/gear_assembly_25_demos_2026-03-06_10-44-01_filtered.pkl \
+    --checkpoint_path=./checkpoints/gear_pretrain \
     --seed=42
 ```
 
@@ -214,16 +214,15 @@ source setup_cuda_env.sh
 # 3. XLA 内存设置
 # Actor 只需要推理，但 GPU 资源充足，可以适当增加
 export XLA_PYTHON_CLIENT_PREALLOCATE=false
-export XLA_PYTHON_CLIENT_MEM_FRACTION=.15  # 15%（如果 GPU 容量大可以增加到 .2）
+export XLA_PYTHON_CLIENT_MEM_FRACTION=.15 
 
-# 4. 启动训练
-python examples/train_rlpd.py \
-    --exp_name=gear_assembly \
+python examples/train_rlpd_pretrain.py \
+    --exp_name=gear_assembly_pretrain \
     --actor \
     --use_sim \
     --ip=localhost \
     --isaac_server_url=http://192.168.31.198:5001/ \
-    --checkpoint_path=./checkpoints/gear_assembly_rlpd \
+    --checkpoint_path=./checkpoints/gear_pretrain \
     --seed=42
 ```
 

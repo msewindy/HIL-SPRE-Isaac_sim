@@ -178,6 +178,14 @@ class IsaacSimGearAssemblyEnvEnhanced(IsaacSimFrankaEnv):
         # Reset terminate flag
         self.terminate = False
         
+        # 记录齿轮初始 Z 高度（用于抓取提升奖励的相对高度计算）
+        self.gear_initial_z = None
+        if hasattr(self, "object_states") and self.object_states:
+            gear_state = self.object_states.get("gear_medium")
+            if gear_state is not None:
+                self.gear_initial_z = gear_state[2]
+                print(f"[INFO] Gear initial Z recorded: {self.gear_initial_z:.4f}")
+        
         return obs, {}
     
     def regrasp(self):
@@ -339,128 +347,132 @@ class IsaacSimGearAssemblyEnvEnhanced(IsaacSimFrankaEnv):
 
     def compute_reward(self, obs: Dict) -> float:
         """
-        计算奖励 (Ground Truth Reward) - Geometric Logic
+        计算奖励 - 齿轮抓取提升任务
         
-        Constraints:
-        1. Alignment: Gear Z-axis parallel to Base Z-axis (cos_theta > 0.97)
-        2. Centering: Gear Origin XY close to Base Origin XY (dist_xy < 1cm)
-           (Both Pin and Hole are at local (0.02, 0), so Origins should align)
-        3. Insertion: Gear Z < 0.42 (World Frame)
+        成功条件：齿轮 (gear_medium) 相对于初始位置，Z 高度提升 >= 0.30m (30cm)
+        即机器人成功抓取齿轮并将其提升 30cm。
         """
+        GEAR_LIFT_DELTA_Z = 0.10
+
         try:
-            # Check if we have object states from server
-            # [DEBUG] Force print periodically to check data presence
-            if hasattr(self, "_rt_debug_counter"):
-                 self._rt_debug_counter += 1
-            else:
-                 self._rt_debug_counter = 0
-            
-            # DEBUG日志已关闭，如需调试请取消注释
-            # if self._rt_debug_counter % 60 == 0:
-            #      has_states = hasattr(self, "object_states") and bool(self.object_states)
-            #      print(f"[REWARD-DEBUG] Step {self._rt_debug_counter}: HasStates={has_states}")
-            #      if has_states:
-            #          print(f" -> Keys: {list(self.object_states.keys())}")
-            
             if hasattr(self, "object_states") and self.object_states:
                 gear_state = self.object_states.get("gear_medium")
-                base_state = self.object_states.get("gear_base")
-                
-                if gear_state is not None and base_state is not None:
-                    # 1. Extract Poses
-                    gear_pos = np.array(gear_state[:3])
-                    gear_quat = np.array(gear_state[3:]) # xyzw
-                    
-                    base_pos = np.array(base_state[:3])
-                    base_quat = np.array(base_state[3:]) # xyzw
-                    
-                    # 2. Check Z-Axis Alignment
-                    # Quat to Rotation Matrix Z-vector
-                    # R * [0,0,1]^T is the third column of R
-                    from scipy.spatial.transform import Rotation as R
-                    
-                    # Scipy uses (x, y, z, w), my tracking sends (x, y, z, w)
-                    r_gear = R.from_quat(gear_quat).as_matrix()
-                    r_base = R.from_quat(base_quat).as_matrix()
-                    
-                    gear_z = r_gear[:, 2] # 3rd column
-                    base_z = r_base[:, 2]
-                    
-                    # Dot product for alignment
-                    dot_z = np.dot(gear_z, base_z)
-                    # Threshold: < 5 degrees
-                    # cos(5) ~= 0.99619
-                    alignment_ok = dot_z > 0.996 
-                    
-                    # 3. Check XY Centering (Relative to Base Frame)
-                    from scipy.spatial.transform import Rotation as R
-                    
-                    # A. Get Gear's Geometric Center (Hole) in World Frame
-                    # Offset (0.02, 0, 0) in Gear Frame -> World Frame
-                    gear_center_offset_local = np.array([0.02, 0.0, 0.0])
-                    r_gear = R.from_quat(gear_quat)
-                    gear_hole_world = gear_pos + r_gear.apply(gear_center_offset_local)
-                    
-                    # B. Transform Gear Hole into Base Local Frame
-                    # P_local = R_base_inv * (P_world - P_base_origin)
-                    r_base = R.from_quat(base_quat)
-                    r_base_inv = r_base.inv()
-                    
-                    rel_pos = gear_hole_world - base_pos
-                    hole_in_base_frame = r_base_inv.apply(rel_pos)
-                    
-                    # C. Check Proximity to Pin Location (0.02, 0.0, 0.0)
-                    # User requirement: x in [0.018, 0.022]
-                    # We also implictly check Y is close to 0 to ensure it's actually on the pin
-                    
-                    x_error = abs(hole_in_base_frame[0] - 0.02)
-                    y_error = abs(hole_in_base_frame[1])
-                    
-                    # Threshold: 2mm tolerance on X (0.018-0.022) and Y
-                    centering_ok = (x_error < 0.002) and (y_error < 0.002)
-                    
-                    # 4. Check Z Insertion
-                    insertion_ok = gear_pos[2] < 0.402
-                    
-                    # 检查当前步是否满足所有成功条件
-                    current_step_success = alignment_ok and centering_ok and insertion_ok
-                    
-                    # [持续状态判断] 跟踪连续成功的步数
-                    if current_step_success:
-                        return 1.0
-                        self.consecutive_success_steps += 1
-                        
-                        # 检查是否达到持续成功要求（2秒 = success_hold_steps 步）
-                        if self.consecutive_success_steps >= self.success_hold_steps:
-                            # 首次达到持续要求时，确认成功并返回奖励
-                            if not self.success_confirmed:
-                                self.success_confirmed = True
-                                print(f"\n[REWARD-SUCCESS] Success Confirmed (Held for {self.consecutive_success_steps} steps / {self.consecutive_success_steps / self.hz:.2f}s)!")
-                            print(f"  -> Gear Z-Height: {gear_pos[2]:.4f} (Thresh: < 0.402)")
-                            print(f"  -> Z-Alignment: {dot_z:.4f} (Thresh: > 0.996)")
-                            print(f"  -> Hole in Base Frame: {hole_in_base_frame} (Target: [0.02, 0, 0])")
-                            print(f"  -> Errors: X_err={x_error:.4f}, Y_err={y_error:.4f} (Thresh: 0.002)")
-                            print(f"  -> Raw Gear Pos: {gear_pos}")
-                            print(f"  -> Raw Base Pos: {base_pos}")
+
+                if gear_state is not None:
+                    gear_z = gear_state[2]
+
+                    # 懒加载：如果 reset 时未能记录初始高度，在首次有数据时记录
+                    if not hasattr(self, "gear_initial_z") or self.gear_initial_z is None:
+                        self.gear_initial_z = gear_z
+                        print(f"[INFO] Gear initial Z recorded (lazy): {self.gear_initial_z:.4f}")
+                        return 0.0
+
+                    delta_z = gear_z - self.gear_initial_z
+                    print(f"[INFO] Gear Z: {gear_z:.4f}, Initial Z: {self.gear_initial_z:.4f}, Delta Z: {delta_z:.4f}")
+
+                    if delta_z >= GEAR_LIFT_DELTA_Z:
                             return 1.0
-                        else:
-                            # 正在累积成功步数，但尚未达到要求
-                            # 可选：打印进度信息（每10步打印一次，避免刷屏）
-                            if self.consecutive_success_steps % 10 == 0:
-                                print(f"[REWARD-PROGRESS] Success holding: {self.consecutive_success_steps}/{self.success_hold_steps} steps ({self.consecutive_success_steps / self.hz:.2f}s / {self.success_hold_duration_sec:.2f}s)")
-                            return 0.0
+
                     else:
-                        # 当前步不满足成功条件，重置连续成功计数
-                        if self.consecutive_success_steps > 0:
-                            print(f"[REWARD-RESET] Success condition lost. Reset counter from {self.consecutive_success_steps} steps.")
-                        self.consecutive_success_steps = 0
-                        self.success_confirmed = False
-                    return 0.0
-                    
+                        return 0.0
+
         except Exception as e:
-            # print(f"[WARNING] GT Reward calculation failed: {e}")
             pass
-            
-        # Fallback to TCP logic if GT fails (e.g. at start)
+
         return super().compute_reward(obs)
+
+    # ========================================================================
+    # [COMMENTED OUT] 原始齿轮组装奖励函数（Gear Assembly Reward）
+    # 该函数检测齿轮安装到 base 上的成功条件（对齐、居中、插入）
+    # 如需恢复组装任务，取消注释此函数并注释上方的抓取奖励函数
+    # ========================================================================
+    # def compute_reward(self, obs: Dict) -> float:
+    #     """
+    #     计算奖励 (Ground Truth Reward) - Geometric Logic
+    #     
+    #     Constraints:
+    #     1. Alignment: Gear Z-axis parallel to Base Z-axis (cos_theta > 0.97)
+    #     2. Centering: Gear Origin XY close to Base Origin XY (dist_xy < 1cm)
+    #        (Both Pin and Hole are at local (0.02, 0), so Origins should align)
+    #     3. Insertion: Gear Z < 0.42 (World Frame)
+    #     """
+    #     try:
+    #         if hasattr(self, "_rt_debug_counter"):
+    #              self._rt_debug_counter += 1
+    #         else:
+    #              self._rt_debug_counter = 0
+    #         
+    #         if hasattr(self, "object_states") and self.object_states:
+    #             gear_state = self.object_states.get("gear_medium")
+    #             base_state = self.object_states.get("gear_base")
+    #             
+    #             if gear_state is not None and base_state is not None:
+    #                 gear_pos = np.array(gear_state[:3])
+    #                 gear_quat = np.array(gear_state[3:])
+    #                 
+    #                 base_pos = np.array(base_state[:3])
+    #                 base_quat = np.array(base_state[3:])
+    #                 
+    #                 from scipy.spatial.transform import Rotation as R
+    #                 
+    #                 r_gear = R.from_quat(gear_quat).as_matrix()
+    #                 r_base = R.from_quat(base_quat).as_matrix()
+    #                 
+    #                 gear_z = r_gear[:, 2]
+    #                 base_z = r_base[:, 2]
+    #                 
+    #                 dot_z = np.dot(gear_z, base_z)
+    #                 alignment_ok = dot_z > 0.996 
+    #                 
+    #                 from scipy.spatial.transform import Rotation as R
+    #                 
+    #                 gear_center_offset_local = np.array([0.02, 0.0, 0.0])
+    #                 r_gear = R.from_quat(gear_quat)
+    #                 gear_hole_world = gear_pos + r_gear.apply(gear_center_offset_local)
+    #                 
+    #                 r_base = R.from_quat(base_quat)
+    #                 r_base_inv = r_base.inv()
+    #                 
+    #                 rel_pos = gear_hole_world - base_pos
+    #                 hole_in_base_frame = r_base_inv.apply(rel_pos)
+    #                 
+    #                 x_error = abs(hole_in_base_frame[0] - 0.02)
+    #                 y_error = abs(hole_in_base_frame[1])
+    #                 
+    #                 centering_ok = (x_error < 0.002) and (y_error < 0.002)
+    #                 
+    #                 insertion_ok = gear_pos[2] < 0.402
+    #                 
+    #                 current_step_success = alignment_ok and centering_ok and insertion_ok
+    #                 
+    #                 if current_step_success:
+    #                     return 1.0
+    #                     self.consecutive_success_steps += 1
+    #                     
+    #                     if self.consecutive_success_steps >= self.success_hold_steps:
+    #                         if not self.success_confirmed:
+    #                             self.success_confirmed = True
+    #                             print(f"\n[REWARD-SUCCESS] Success Confirmed (Held for {self.consecutive_success_steps} steps / {self.consecutive_success_steps / self.hz:.2f}s)!")
+    #                         print(f"  -> Gear Z-Height: {gear_pos[2]:.4f} (Thresh: < 0.402)")
+    #                         print(f"  -> Z-Alignment: {dot_z:.4f} (Thresh: > 0.996)")
+    #                         print(f"  -> Hole in Base Frame: {hole_in_base_frame} (Target: [0.02, 0, 0])")
+    #                         print(f"  -> Errors: X_err={x_error:.4f}, Y_err={y_error:.4f} (Thresh: 0.002)")
+    #                         print(f"  -> Raw Gear Pos: {gear_pos}")
+    #                         print(f"  -> Raw Base Pos: {base_pos}")
+    #                         return 1.0
+    #                     else:
+    #                         if self.consecutive_success_steps % 10 == 0:
+    #                             print(f"[REWARD-PROGRESS] Success holding: {self.consecutive_success_steps}/{self.success_hold_steps} steps ({self.consecutive_success_steps / self.hz:.2f}s / {self.success_hold_duration_sec:.2f}s)")
+    #                         return 0.0
+    #                 else:
+    #                     if self.consecutive_success_steps > 0:
+    #                         print(f"[REWARD-RESET] Success condition lost. Reset counter from {self.consecutive_success_steps} steps.")
+    #                     self.consecutive_success_steps = 0
+    #                     self.success_confirmed = False
+    #                 return 0.0
+    #                 
+    #     except Exception as e:
+    #         pass
+    #         
+    #     return super().compute_reward(obs)
 

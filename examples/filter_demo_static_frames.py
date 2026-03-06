@@ -66,7 +66,8 @@ def _filter_trajectory_static_frames(transitions, zero_tol):
             continue
         is_static = _is_static(action, prev_action, zero_tol)
         # 仅当「当前是静态 且 上一帧也是静态」时才删掉当前帧
-        if is_static and prev_was_static:
+        # 但 dones=True 的帧是轨迹边界标记，永远保留
+        if is_static and prev_was_static and not t.get("dones", False):
             pass
         else:
             kept.append(t)

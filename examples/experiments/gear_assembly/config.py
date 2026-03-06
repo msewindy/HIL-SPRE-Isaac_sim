@@ -165,7 +165,7 @@ class IsaacSimEnvConfig(DefaultEnvConfig):
     
     # 其他配置
     DISPLAY_IMAGE = True
-    MAX_EPISODE_LENGTH = 1800
+    MAX_EPISODE_LENGTH = 400
     
     # 为了兼容性，定义空字典或默认值（如果基类需要）
     COMPLIANCE_PARAM: Dict[str, float] = {}
@@ -190,12 +190,11 @@ class TrainConfig(DefaultTrainingConfig):
     steps_per_update = 50
     encoder_type = "resnet-pretrained"
     setup_mode = "single-arm-continuous-gripper"
-    
-    # 动态MAX_EPISODE_LENGTH配置
-    # 训练前期使用较短的episode长度，加快数据收集
-    # 演示数据统计：最短590步，最长1254步，平均830步
-    early_max_episode_length: int = 800  # 前期使用的较短长度（应大于演示数据平均长度，留有余量，足够完成人工干预示范）
-    early_training_steps: int = 10000  # 前期训练步数阈值，超过后恢复为原始值（1800）
+
+    # γ=0.995: 针对 ~283 步轨迹优化
+    # 论文大部分任务用 γ=0.97 + 100 步 → Q(s_0)≈0.048
+    # 我们用 γ=0.995 + 283 步 → Q(s_0)≈0.242（更强的信号传播）
+    discount: float = 0.995
 
     def get_environment(self, fake_env=False, save_video=False, classifier=False, isaac_server_url=None, skip_server_connection=False):
         """
@@ -210,14 +209,10 @@ class TrainConfig(DefaultTrainingConfig):
         Returns:
             env: Gym 环境实例
         """
-        # ========== 环境选择逻辑 ==========
         if fake_env:
-            # 使用 Isaac Sim 仿真环境
             try:
                 from experiments.gear_assembly.isaac_sim_gear_env_enhanced import IsaacSimGearAssemblyEnvEnhanced
-                # 创建配置实例
                 isaac_config = IsaacSimEnvConfig()
-                # 如果提供了命令行参数，覆盖配置中的 SERVER_URL
                 if isaac_server_url is not None:
                     isaac_config.SERVER_URL = isaac_server_url
                     if not isaac_config.SERVER_URL.endswith('/'):
@@ -226,11 +221,11 @@ class TrainConfig(DefaultTrainingConfig):
                 else:
                     print(f"[INFO] Using Isaac Sim server URL from config: {isaac_config.SERVER_URL}")
                 env = IsaacSimGearAssemblyEnvEnhanced(
-                    fake_env=True,  # 始终为 True（仿真环境）
+                    fake_env=True,
                     save_video=save_video,
                     config=isaac_config,
-                    enable_domain_randomization=False,  # 域随机化已关闭（根据项目需求）
-                    skip_server_connection=skip_server_connection,  # Learner 跳过服务器连接
+                    enable_domain_randomization=False,
+                    skip_server_connection=skip_server_connection,
                 )
             except ImportError as e:
                 raise ImportError(
@@ -239,48 +234,27 @@ class TrainConfig(DefaultTrainingConfig):
                     "Expected files: examples/experiments/gear_assembly/isaac_sim_gear_env_enhanced.py"
                 )
         else:
-            # 使用真实环境（原有逻辑）
             env = GearAssemblyEnv(
                 fake_env=False,
                 save_video=save_video,
                 config=EnvConfig(),
             )
         
-        # ========== 环境包装器（真实和仿真环境共用）==========
-        # 1. 固定夹爪包装器（任务要求夹爪关闭）
-        # [FIX] Disabled strict gripper closing to allow Gamepad control for demo recording
-        # env = GripperCloseEnv(env)
-        
-        # 2. SpaceMouse 干预（真实环境必需，仿真环境可选）
         if not fake_env:
-            # 真实环境：必需 SpaceMouse 进行干预
             env = SpacemouseIntervention(env)
-        # 注意：仿真环境也可以使用 SpaceMouse（如果已连接）
-        # 如果需要，可以取消下面的注释：
         else:
-            # [新增] 仿真环境：使用手柄控制
             try:
                 from franka_env.envs.wrappers import GamepadIntervention
                 env = GamepadIntervention(env, joystick_id=0, sensitivity=0.2)
                 print("[INFO] Using Gamepad for intervention in Simulation (Sensitivity=0.2)")
-                # print("[INFO] Gamepad intervention disabled for stability testing")
             except ImportError:
                 print("[WARNING] Gamepad wrapper not found, falling back to SpaceMouse or No-Intervention")
-                # env = SpacemouseIntervention(env) # 如果想回退到 SpaceMouse
         
-        # 3. 相对坐标系包装器
         env = RelativeFrame(env)
-        
-        # 4. 四元数转欧拉角包装器
         env = Quat2EulerWrapper(env)
-        
-        # 5. SERL 观察包装器
         env = SERLObsWrapper(env, proprio_keys=self.proprio_keys)
-        
-        # 6. 动作分块包装器
         env = ChunkingWrapper(env, obs_horizon=1, act_exec_horizon=None)
         
-        # 7. 奖励分类器（如果需要）
         if classifier:
             classifier = load_classifier_func(
                 key=jax.random.PRNGKey(0),
@@ -291,9 +265,46 @@ class TrainConfig(DefaultTrainingConfig):
 
             def reward_func(obs):
                 sigmoid = lambda x: 1 / (1 + jnp.exp(-x))
-                # [FIX] Use index -1 for gripper_pose as index 6 points to tcp_vel[0] due to Quat2EulerWrapper
                 return int(sigmoid(classifier(obs)) > 0.85 and obs['state'][0, -1] > 0.04)
 
             env = MultiCameraBinaryRewardClassifierWrapper(env, reward_func)
         
         return env
+
+
+class TrainPretrainConfig(TrainConfig):
+    """
+    针对长程任务优化的 RLPD 训练配置（预训练 + 动态采样比例 + 高折扣因子）。
+    
+    配合 train_rlpd_pretrain.py 使用。
+    与 TrainConfig 共享环境配置和基础训练参数，新增预训练和长程优化参数。
+    
+    设计依据：
+    - gear assembly 演示轨迹平均 ~548 步（远超 HIL-SERL 论文中的 ~100 步）
+    - 纯 50/50 采样在长程稀疏奖励任务中效率极低
+    - 需要预训练让 Bellman backup 有足够时间传播 Q 值
+    - 默认 γ=0.97 的有效视野仅 ~33 步，对 548 步任务完全不够
+    """
+
+    # ==================== 折扣因子 ====================
+    # 已统一到 TrainConfig 中 (γ=0.995)，此处不再单独覆盖
+
+    # ==================== 预训练阶段参数 ====================
+    # Learner 在 Actor 启动前，使用纯 demo 数据训练的步数。
+    # 目的：让 Critic 建立完整的价值地图，Actor 学会基础策略。
+    # γ=0.99 下，5000 步预训练可以让 Q 值传播约 200-300 步的有效距离。
+    # 若效果不理想可增大到 10000。
+    pretrain_steps: int = 5000
+
+    # ==================== 动态采样比例参数 ====================
+    # 正式训练开始时的 demo 数据采样比例（0.0 ~ 1.0）
+    # 高比例减少早期脏数据（随机探索产生的无用数据）对训练的干扰
+    initial_demo_ratio: float = 0.8
+
+    # 最终的 demo 数据采样比例（退火目标值）
+    # 0.5 = 标准 RLPD 的 50/50 比例
+    final_demo_ratio: float = 0.5
+
+    # 从 initial_demo_ratio 退火到 final_demo_ratio 所需的训练步数
+    # 退火完成后，采样比例固定在 final_demo_ratio
+    demo_ratio_anneal_steps: int = 20000
