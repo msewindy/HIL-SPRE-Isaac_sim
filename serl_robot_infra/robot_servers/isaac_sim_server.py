@@ -353,15 +353,15 @@ class IsaacSimServer:
         # Root joints (1-4) need high stiffness
         # Wrist joints (5-7) need higher stiffness to reduce end-effector vibration
         gains = {
-            "default": {"stiffness": 400.0, "damping": 40.0},
-            "root":    {"stiffness": 600.0, "damping": 60.0}, # Joints 1-4
-            "wrist":   {"stiffness": 400.0, "damping": 40.0}, # Joints 5-7 (Increased from 200/20 to reduce vibration)
-            "finger":  {"stiffness": 1000.0, "damping": 100.0}, # Gripper
+            "default": {"stiffness": 450.0, "damping": 55.0},
+            "root":    {"stiffness": 700.0, "damping": 85.0},   # Joints 1-4
+            "wrist":   {"stiffness": 520.0, "damping": 95.0},   # Joints 5-7: higher damping suppresses EE jitter
+            "finger":  {"stiffness": 1000.0, "damping": 120.0}, # Gripper
         }
         
         # 通用稳定性参数
-        armature_val = 0.01
-        friction_val = 0.1
+        armature_val = 0.03
+        friction_val = 0.2
 
         # 获取机器人 Prim
         robot_prim = stage.GetPrimAtPath(self.robot_prim_path)

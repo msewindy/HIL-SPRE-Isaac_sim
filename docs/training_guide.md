@@ -158,11 +158,11 @@ python examples/train_rlpd.py \
 export XLA_PYTHON_CLIENT_PREALLOCATE=false
 export XLA_PYTHON_CLIENT_MEM_FRACTION=.8
 
-python examples/train_rlpd_pretrain.py \
-    --exp_name=gear_assembly_pretrain \
+python examples/train_rlpd.py \
+    --exp_name=gear_assembly \
     --learner \
-    --demo_path=./demo_data/gear_assembly_25_demos_2026-03-06_10-44-01_filtered.pkl \
-    --checkpoint_path=./checkpoints/gear_pretrain \
+    --demo_path=./demo_data/gear_assembly_25_demos_2026-03-06_10-44-01_filtered_scaled.pkl \
+    --checkpoint_path=./checkpoints/gear_online \
     --seed=42
 ```
 
@@ -216,13 +216,13 @@ source setup_cuda_env.sh
 export XLA_PYTHON_CLIENT_PREALLOCATE=false
 export XLA_PYTHON_CLIENT_MEM_FRACTION=.15 
 
-python examples/train_rlpd_pretrain.py \
-    --exp_name=gear_assembly_pretrain \
+python examples/train_rlpd.py \
+    --exp_name=gear_assembly \
     --actor \
     --use_sim \
     --ip=localhost \
     --isaac_server_url=http://192.168.31.198:5001/ \
-    --checkpoint_path=./checkpoints/gear_pretrain \
+    --checkpoint_path=./checkpoints/gear_online \
     --seed=42
 ```
 

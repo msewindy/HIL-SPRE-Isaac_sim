@@ -19,6 +19,6 @@ python examples/record_demos.py --exp_name=gear_assembly --successes_needed=25 -
 
 python ./examples/analyze_demo_statistics.py /home/lingjingqiyuan/project/HIL-SPRE-Isaac_sim/demo_data/gear_assembly_25_demos_2026-03-06_10-44-01_filtered.pkl
 
-python ./examples/replay_demo_trajectory.py --demo_path=demo_data/gear_assembly_25_demos_2026-03-06_10-44-01_filtered.pkl --isaac_server_url=http://192.168.31.198:5001/
+python ./examples/replay_demo_trajectory.py --demo_path=demo_data/gear_assembly_25_demos_2026-03-06_10-44-01_filtered_scaled.pkl --isaac_server_url=http://192.168.31.198:5001/
 
 

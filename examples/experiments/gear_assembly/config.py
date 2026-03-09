@@ -161,14 +161,13 @@ class IsaacSimEnvConfig(DefaultEnvConfig):
     GEAR_BASE_RESET_ANGLE_RANGE = (-10.0, 10.0)
 
     # 动作缩放
-    # [FIX] 原本 ACTION_SCALE = (0.01, 0.06, 1)，现在为了配合 Gamepad 放大到了原来 5 倍
-    # 缩小 ACTION_SCALE 为原来的 1/5 维持相同物理移动速度：
-    # 平移 0.01 / 5 = 0.002, 旋转 0.06 / 5 = 0.012
-    ACTION_SCALE = (0.002, 0.012, 1)
+    # 为了手柄控制更稳更精准，统一下调动作增量（恒定系数，不做模式切换）
+    # 平移/旋转都比之前更小，减轻远端与抓取后的抖动。
+    ACTION_SCALE = (0.0012, 0.008, 1)
     
     # 其他配置
     DISPLAY_IMAGE = True
-    MAX_EPISODE_LENGTH = 400
+    MAX_EPISODE_LENGTH = 500
     
     # 为了兼容性，定义空字典或默认值（如果基类需要）
     COMPLIANCE_PARAM: Dict[str, float] = {}
@@ -248,9 +247,14 @@ class TrainConfig(DefaultTrainingConfig):
         else:
             try:
                 from franka_env.envs.wrappers import GamepadIntervention
-                # [FIX] 设置 sensitivity=1.0，防止对 action 域做错误缩放，引发 covariate shift
-                env = GamepadIntervention(env, joystick_id=0, sensitivity=1.0)
-                print("[INFO] Using Gamepad for intervention in Simulation (Sensitivity=1.0)")
+                # 固定映射比例 + 平滑，避免“精细模式切换”导致动作域不一致
+                env = GamepadIntervention(
+                    env,
+                    joystick_id=0,
+                    sensitivity=1.0,
+                    deadzone=0.08,
+                )
+                print("[INFO] Using Gamepad for intervention in Simulation (consistent action mapping)")
 
             except ImportError:
                 print("[WARNING] Gamepad wrapper not found, falling back to SpaceMouse or No-Intervention")
