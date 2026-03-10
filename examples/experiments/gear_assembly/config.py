@@ -242,24 +242,24 @@ class TrainConfig(DefaultTrainingConfig):
                 config=EnvConfig(),
             )
         
+        env = RelativeFrame(env)
+        
         if not fake_env:
             env = SpacemouseIntervention(env)
         else:
             try:
                 from franka_env.envs.wrappers import GamepadIntervention
-                # 固定映射比例 + 平滑，避免“精细模式切换”导致动作域不一致
+                # 关键：将 GamepadIntervention 放在 RelativeFrame 外层，确保人控和策略都走同一坐标变换链
                 env = GamepadIntervention(
                     env,
                     joystick_id=0,
                     sensitivity=1.0,
                     deadzone=0.08,
                 )
-                print("[INFO] Using Gamepad for intervention in Simulation (consistent action mapping)")
-
+                print("[INFO] Using Gamepad for intervention in Simulation (same transform path as policy)")
             except ImportError:
                 print("[WARNING] Gamepad wrapper not found, falling back to SpaceMouse or No-Intervention")
-        
-        env = RelativeFrame(env)
+
         env = Quat2EulerWrapper(env)
         env = SERLObsWrapper(env, proprio_keys=self.proprio_keys)
         env = ChunkingWrapper(env, obs_horizon=1, act_exec_horizon=None)
